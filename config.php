@@ -29,14 +29,17 @@ const MAIL_FROM_NAME = 'AHPC BOM System';
 const APP_TIMEZONE = 'Asia/Kolkata';
 const SESSION_NAME = 'ahpc_bom';
 
-// The team. Admins can assign work to anyone (including themselves); engineers do the work.
-// [name, e-mail (login), role, starting password]
+// Starting logins, created once on first start (after that, admins add / edit / delete users on the
+// "Users" page). Everyone signs in with their user name or e-mail and changes the password under "Password".
+// [name, user name, e-mail, role, starting password]
 const TEAM = [
-    ['Gurubalaji', 'gurubalaji@allwayhpc.com', 'Engineer', 'Guru@2026'],
-    ['Saravana Kumar', 'saravanakumar@allwayhpc.com', 'Admin', 'Saravana@2026'],
-    ['Dinesh', 'dinesh@allwayhpc.com', 'Engineer', 'Dinesh@2026'],
-    ['Theepthithan', 'theepthithan@allwayhpc.com', 'Engineer', 'Theep@2026'],
-    ['Praveen', 'praveen@allwayhpc.com', 'Admin', 'Praveen@2026'],
+    ['Praveen', 'praveen', 'praveen@allwayhpc.com', 'Admin', 'Praveen@2026'],
+    ['Saravana Kumar', 'saravanakumar', 'saravanakumar@allwayhpc.com', 'Admin', 'Saravana@2026'],
+    ['Ravichandran', 'ravichandran', 'ravichandran@allwayhpc.com', 'Admin', 'Ravi@2026'],
+    ['Gurubalaji', 'gurubalaji', 'gurubalaji@allwayhpc.com', 'Engineer', 'Guru@2026'],
+    ['Theepthithan', 'theepthithan', 'theepthithan@allwayhpc.com', 'Engineer', 'Theep@2026'],
+    ['Dinesh', 'dinesh', 'dinesh@allwayhpc.com', 'Engineer', 'Dinesh@2026'],
+    ['Muthumadhan', 'muthumadhan', 'muthumadhan@allwayhpc.com', 'Engineer', 'Muthu@2026'],
 ];
 
 // Path to LibreOffice for the "Download PDF" button (blank = look for soffice / libreoffice on the PATH).

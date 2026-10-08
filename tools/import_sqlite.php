@@ -83,6 +83,6 @@ $dst->exec("UPDATE users SET password_hash=NULL WHERE password_hash LIKE 'scrypt
 $dst->exec("DELETE FROM app_meta WHERE k='schema_version'");
 
 echo "\nImport finished. Log in with these starting passwords (each person can change it under 'Password'):\n";
-foreach (TEAM as [$n, $e, $r, $p]) {
-    printf("   %-15s %-9s %-30s %s\n", $n, $r, $e, $p);
+foreach (TEAM as [$n, $u, $e, $r, $p]) {
+    printf("   %-15s %-14s %-9s %-30s %s\n", $n, $u, $r, $e, $p);
 }

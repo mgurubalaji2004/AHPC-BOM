@@ -7,6 +7,7 @@
 require_once __DIR__ . '/core.php';
 require_once __DIR__ . '/notify.php';
 require_once __DIR__ . '/quote_docx.php';
+require_once __DIR__ . '/quote_pdf.php';
 
 // ---------------------------------------------------------------------------
 // Users / assignment / remarks / notifications
@@ -197,6 +198,7 @@ function pending_quotes(): array
     // 2. latest version of every BOM that has not been quoted yet
     foreach (all("SELECT b.*, c.company FROM boms b LEFT JOIN customers c ON c.id=b.customer_id
                   WHERE b.status != 'QUOTED' AND b.status != 'REVISION_REQUIRED' AND COALESCE(b.created_by,'') != 'Excel import'
+                    AND COALESCE(b.source,'') != 'UPLOAD'
                     AND " . LATEST_BOM . ' ORDER BY b.id DESC') as $b) {
         [$stage, $who] = PENDING_STAGE[$b['status']] ?? [$b['status'], 'Engineer'];
         $rows[] = ['kind' => 'bom', 'id' => (int)$b['id'], 'ref' => "{$b['bom_number']} v{$b['version']}", 'title' => $b['title'],
@@ -339,6 +341,21 @@ function rebuild_components(): int
     return count($groups);
 }
 
+/** Add a BOM line to the component database when that category + model is not there yet. */
+function add_component_from_line(array $it): void
+{
+    $model = trim(preg_replace('/\s+/u', ' ', (string)$it['part_number']));
+    $cat = trim((string)$it['category']);
+    if ($model === '' || $cat === '') {
+        return;
+    }
+    if (!val('SELECT 1 FROM components WHERE LOWER(category)=LOWER(?) AND LOWER(part_number)=LOWER(?) LIMIT 1', [$cat, $model])) {
+        $price = to_int($it['unit_price']);
+        q("INSERT INTO components (category, manufacturer, part_number, description, supplier, cost, selling_price, stock)
+           VALUES (?, ?, ?, ?, 'From BOM history', ?, ?, 0)", [$cat, (string)$it['manufacturer'], $model, (string)$it['description'], $price, $price]);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Quotation (format = Allway HPC Word quotation; editable any time)
 // ---------------------------------------------------------------------------
@@ -376,10 +393,12 @@ function spec_row_for(array $item): ?string
     if ($has('gpu') || $has('graphic')) return 'GPU';
     if ($has('hdd') || $has('hard') || in_array('hdd', preg_split('/\s+/', trim($d)), true)) return 'HDD';
     if ($has('ssd') || $has('nvme') || $has('storage') || $has('disk')) return 'SSD';
-    if ($has('nic') || $has('network') || $has('lan')) return 'Network';
+    if ($has('nic') || $has('network') || $has('lan') || $has('infiniband') || $has('hca') || $has('ethernet')) return 'Network';
     if ($has('hba') || $has('raid') || $has('controller') || $has('add')) return 'Add-on-Card';
-    if ($has('psu') || $has('power')) return 'Power Supply';
-    return null;
+    if ($has('psu') || $has('power') || $has('smps')) return 'Power Supply';
+    if ($c === 'os' || $has('operating')) return 'Operating System';
+    // anything else on the BOM (cables, monitor, keyboard & mouse, accessories...) is still listed on the quotation
+    return trim($d) !== '' ? 'Add-on-Card' : null;
 }
 
 function build_specs(array $items, ?array $existing = null): array

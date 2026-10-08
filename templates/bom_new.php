@@ -18,7 +18,13 @@
 <div class="card" style="max-width:600px;">
   <form method="post">
     <?php if ($copy_bom): ?><input type="hidden" name="copy_from" value="<?= e($copy_bom['id']) ?>"><?php endif; ?>
-    <?php if ($requirement): ?><input type="hidden" name="requirement_id" value="<?= e($requirement['id']) ?>"><?php endif; ?>
+    <?php if ($requirement): ?><input type="hidden" name="requirement_id" value="<?= e($requirement['id']) ?>">
+    <?php else: ?>
+    <div class="field"><label>For requirement (optional)</label>
+      <select name="requirement_id"><option value="">-- none --</option>
+        <?php foreach ($requirements as $r): ?><option value="<?= e($r['id']) ?>"><?= e($r['req_number'] . ' - ' . $r['title'] . ($r['company'] ? ' (' . $r['company'] . ')' : '')) ?></option><?php endforeach; ?>
+      </select></div>
+    <?php endif; ?>
     <?php $selected_id = $requirement ? $requirement['customer_id'] : ($copy_bom['customer_id'] ?? null);
           include __DIR__ . '/_customer_picker.php'; ?>
     <div class="field">

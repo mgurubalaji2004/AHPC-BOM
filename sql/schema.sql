@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS app_meta (
 CREATE TABLE IF NOT EXISTS users (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(120) NOT NULL,
+    username VARCHAR(60),
     role VARCHAR(20) NOT NULL,
     email VARCHAR(190),
     password_hash VARCHAR(255),
@@ -103,7 +104,11 @@ CREATE TABLE IF NOT EXISTS boms (
     assigned_by INT NULL,
     assigned_at DATETIME NULL,
     due_date DATE NULL,
+    source VARCHAR(20) NULL,            -- 'UPLOAD' = imported from an Excel / Zoho sheet (BOM library)
+    source_file VARCHAR(255) NULL,
+    fingerprint CHAR(32) NULL,
     KEY idx_boms_number (bom_number, version),
+    KEY idx_boms_source (source, fingerprint),
     CONSTRAINT fk_bom_requirement FOREIGN KEY (requirement_id) REFERENCES requirements(id),
     CONSTRAINT fk_bom_customer FOREIGN KEY (customer_id) REFERENCES customers(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

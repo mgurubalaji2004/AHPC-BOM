@@ -4,15 +4,26 @@ $cur_index = array_search($bom['status'], $stage_order, true);
 $cur_index = $cur_index === false ? -1 : $cur_index;
 $is_admin = current_role() === 'Admin';
 $bid = (int)$bom['id'];
+$is_lib = ($bom['source'] ?? '') === 'UPLOAD';
 ?>
 <div class="page-header">
   <h1><?= e($bom['bom_number']) ?> <span style="color:var(--muted);font-weight:400;">v<?= e($bom['version']) ?></span></h1>
   <div style="display:flex;gap:8px;align-items:center;">
     <?php if ($bom['status'] === 'REVISION_REQUIRED'): ?><span class="badge red">REVISION REQUIRED</span><?php endif; ?>
+    <?php if (!$is_lib): ?>
     <form method="post" action="<?= e(url("/boms/$bid/clone")) ?>"><button class="btn secondary" type="submit">Create another BOM from this</button></form>
+    <?php if ($is_admin): ?>
+    <form method="post" action="<?= e(url("/boms/$bid/delete")) ?>" onsubmit="return confirm('Delete this BOM? Its quotations are deleted too.')"><button class="btn danger" type="submit">Delete</button></form>
+    <?php endif; endif; ?>
   </div>
 </div>
 
+<?php if ($is_lib): ?>
+<div class="card" style="background:#f8f7ff;border:1px dashed var(--purple);">
+  <b>Uploaded BOM</b><?= $bom['source_file'] ? ' from <code>' . e($bom['source_file']) . '</code>' : '' ?>. Use it as the start of a customer BOM:
+  <?php $b = $bom; include __DIR__ . '/_bom_actions.php'; ?>
+</div>
+<?php else: ?>
 <?php $kind = 'bom'; $item_id = $bid; include __DIR__ . '/_thread.php'; ?>
 
 <div class="workflow-steps">
@@ -20,6 +31,7 @@ $bid = (int)$bom['id'];
   <div class="step <?= $i < $cur_index ? 'done' : ($i === $cur_index ? 'active' : '') ?>"><?= e(str_replace('_', ' ', $s)) ?></div>
   <?php endforeach; ?>
 </div>
+<?php endif; ?>
 
 <div class="card">
   <form method="post" action="<?= e(url("/boms/$bid/meta")) ?>" class="grid-3">
@@ -62,7 +74,7 @@ $bid = (int)$bom['id'];
     <?php endforeach; ?>
   </div>
   <?php endif; ?>
-  <?php if (in_array($bom['status'], ['UNDER_REVIEW', 'APPROVED', 'QUOTED'], true)): ?>
+  <?php if (!$is_lib && in_array($bom['status'], ['UNDER_REVIEW', 'APPROVED', 'QUOTED'], true)): ?>
   <div style="margin-top:10px;padding:10px;background:#eef2ff;border-radius:8px;font-size:0.85rem;">
     This BOM is <b><?= e(str_replace('_', ' ', $bom['status'])) ?></b> but can still be edited. Changes are saved straight away.
     <?php if ($bom['status'] !== 'QUOTED'): ?>
@@ -174,6 +186,7 @@ $bid = (int)$bom['id'];
   </div>
 </div>
 
+<?php if (!$is_lib): ?>
 <div class="section-title">Workflow Actions</div>
 <div class="card no-print" style="display:flex;gap:10px;flex-wrap:wrap;">
   <?php if ($bom['status'] === 'DRAFT'): ?>
@@ -206,3 +219,4 @@ $bid = (int)$bom['id'];
   <a class="btn secondary" href="<?= e(url("/quotes/{$quote['id']}/edit")) ?>">Edit Quotation</a>
   <?php endif; ?>
 </div>
+<?php endif; ?>

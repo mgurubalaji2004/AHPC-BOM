@@ -8,7 +8,7 @@ if (PHP_SAPI !== 'cli') {
 require_once __DIR__ . '/../lib/core.php';
 
 reset_team_passwords(db());
-foreach (TEAM as [$n, $e, $r, $p]) {
-    printf("   %-15s %-9s %-30s %s\n", $n, $r, $e, $p);
+foreach (TEAM as [$n, $u, $e, $r, $p]) {
+    printf("   %-15s %-14s %-9s %-30s %s\n", $n, $u, $r, $e, $p);
 }
 echo " All " . count(TEAM) . " passwords have been reset to the values above.\n";

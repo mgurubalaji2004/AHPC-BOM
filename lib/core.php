@@ -9,7 +9,7 @@ require_once __DIR__ . '/../config.php';
 date_default_timezone_set(APP_TIMEZONE);
 
 const BASE_DIR = __DIR__ . '/..';
-const SCHEMA_VERSION = '1';
+const SCHEMA_VERSION = '2';
 const ROLES = ['Engineer', 'Admin'];
 const KIND_TABLE = ['req' => 'requirements', 'bom' => 'boms', 'quote' => 'quotations'];
 const KIND_LABEL = ['req' => 'Requirement', 'bom' => 'BOM', 'quote' => 'Quotation'];
@@ -117,82 +117,115 @@ function init_db(PDO $pdo): void
     } catch (PDOException $e) {
         $v = false;
     }
-    $want = SCHEMA_VERSION . ':' . substr(md5(serialize(TEAM)), 0, 10);   // re-run when TEAM is edited
-    if ($v === $want) {
+    if ($v === SCHEMA_VERSION) {
         return;
     }
-    $first_time = !(bool)$pdo->query("SHOW TABLES LIKE 'users'")->fetchColumn();
-    run_schema($pdo);
-    if ($first_time) {
-        seed($pdo);
+    // only one request migrates; the others wait for it
+    $pdo->query("SELECT GET_LOCK('ahpc_bom_migrate', 600)")->fetchColumn();
+    try {
+        $v = $pdo->query("SELECT v FROM app_meta WHERE k='schema_version'")->fetchColumn();
+    } catch (PDOException $e) {
+        $v = false;
     }
-    ensure_team($pdo);
-    $pdo->prepare("REPLACE INTO app_meta (k, v) VALUES ('schema_version', ?)")->execute([$want]);
+    if ($v !== SCHEMA_VERSION) {
+        @set_time_limit(600);
+        $first_time = !(bool)$pdo->query("SHOW TABLES LIKE 'users'")->fetchColumn();
+        run_schema($pdo);
+        migrate($pdo, $first_time ? 0 : (int)$v);
+        $pdo->prepare("REPLACE INTO app_meta (k, v) VALUES ('schema_version', ?)")->execute([SCHEMA_VERSION]);
+    }
+    $pdo->query("SELECT RELEASE_LOCK('ahpc_bom_migrate')");
 }
 
-function seed(PDO $pdo): void
+function column_exists(PDO $pdo, string $table, string $col): bool
 {
-    $st = $pdo->prepare('INSERT INTO customers (company, contact_person, email, phone) VALUES (?, ?, ?, ?)');
-    foreach ([
-        ['ABC Technologies Pvt Ltd', 'Arjun Rao', 'arjun@abctech.com', '9876543210'],
-        ['XYZ Research Labs', 'Divya Menon', 'divya@xyzlabs.in', '9123456780'],
-    ] as $r) {
-        $st->execute($r);
-    }
-    $st = $pdo->prepare('INSERT INTO components (category, manufacturer, part_number, description, supplier, cost, selling_price, stock)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
-    foreach ([
-        ['CPU', 'AMD', 'EPYC 9554', '64-core Server CPU', 'Local Distributor', 250000, 285000, 6],
-        ['CPU', 'Intel', 'Xeon W5-2455X', '12-core Workstation CPU', 'Local Distributor', 90000, 105000, 10],
-        ['GPU', 'NVIDIA', 'H200 SXM', '141GB HBM3e AI GPU', 'OEM Partner', 2200000, 2450000, 8],
-        ['GPU', 'NVIDIA', 'RTX 6000 Ada', '48GB Workstation GPU', 'OEM Partner', 420000, 470000, 4],
-        ['Motherboard', 'Gigabyte', 'MW53-HP0', 'Server Motherboard', 'Local Distributor', 55000, 65000, 12],
-        ['RAM', 'Samsung', '64GB DDR5 ECC', 'Server RAM Module', 'Local Distributor', 28000, 32000, 40],
-        ['Storage', 'Samsung', 'PM9A3 3.84TB', 'Enterprise NVMe SSD', 'Local Distributor', 48000, 54000, 20],
-        ['Networking', 'NVIDIA', 'ConnectX-7 400G', 'InfiniBand NIC', 'OEM Partner', 180000, 205000, 6],
-        ['Chassis', 'Supermicro', 'SYS-4029GP', '4U GPU Server Chassis', 'OEM Partner', 150000, 172000, 3],
-        ['PSU', 'Delta', '3000W Redundant', 'Server Power Supply', 'Local Distributor', 35000, 40000, 15],
-    ] as $r) {
-        $st->execute($r);
+    $st = $pdo->prepare('SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?');
+    $st->execute([$table, $col]);
+    return (bool)$st->fetch();
+}
+
+function add_column(PDO $pdo, string $table, string $col, string $decl): void
+{
+    if (!column_exists($pdo, $table, $col)) {
+        $pdo->exec("ALTER TABLE `$table` ADD COLUMN `$col` $decl");
     }
 }
 
-/** Create the logins listed in TEAM. Existing users keep the password they have. */
+/** Bring an older database up to date. $from = 0 for a brand-new database. */
+function migrate(PDO $pdo, int $from): void
+{
+    add_column($pdo, 'users', 'username', 'VARCHAR(60) NULL AFTER name');
+    add_column($pdo, 'boms', 'source', 'VARCHAR(20) NULL');
+    add_column($pdo, 'boms', 'source_file', 'VARCHAR(255) NULL');
+    add_column($pdo, 'boms', 'fingerprint', 'CHAR(32) NULL');
+    $pdo->exec("UPDATE users SET username = LOWER(SUBSTRING_INDEX(email, '@', 1)) WHERE (username IS NULL OR username = '') AND email LIKE '%@%'");
+    if ($from < 2) {
+        ensure_team($pdo);   // adds the new team members (existing logins are left as they are)
+        // Version 2: customers and components come from the uploaded BOM library (data/bom_library)
+        load_bom_library($pdo, true);
+    }
+}
+
+/**
+ * Replace the uploaded BOM library: removes the earlier Excel-imported BOMs that have no quotation,
+ * clears customers (when $clear_customers) and components, imports every file of data/bom_library and
+ * rebuilds the component database from all BOM lines. Returns [boms created, files read, skipped files].
+ */
+function load_bom_library(PDO $pdo, bool $clear_customers): array
+{
+    require_once __DIR__ . '/workflow.php';
+    require_once __DIR__ . '/bom_import.php';
+    $old = $pdo->query("SELECT b.id FROM boms b WHERE (b.created_by = 'Excel import' OR b.source = 'UPLOAD')
+                        AND NOT EXISTS (SELECT 1 FROM quotations q WHERE q.bom_id = b.id)")->fetchAll(PDO::FETCH_COLUMN);
+    foreach (array_chunk($old, 200) as $ids) {
+        $in = implode(',', array_map('intval', $ids));
+        $pdo->exec("DELETE FROM bom_items WHERE bom_id IN ($in)");
+        $pdo->exec("DELETE FROM remarks WHERE kind='bom' AND item_id IN ($in)");
+        $pdo->exec("UPDATE boms SET parent_bom_id = NULL WHERE parent_bom_id IN ($in)");
+        $pdo->exec("DELETE FROM boms WHERE id IN ($in)");
+    }
+    if ($clear_customers) {
+        foreach (['requirements', 'boms', 'quotations'] as $t) {
+            $pdo->exec("UPDATE $t SET customer_id = NULL");
+        }
+        $pdo->exec('DELETE FROM customers');
+    }
+    $result = [0, 0, []];
+    if (is_dir(BASE_DIR . '/data/bom_library')) {
+        $result = import_bom_folder(BASE_DIR . '/data/bom_library');
+    }
+    rebuild_components();
+    return $result;
+}
+
+/** Create the logins listed in TEAM that do not exist yet. Existing users are never changed. */
 function ensure_team(PDO $pdo): void
 {
-    $pdo->exec("DELETE FROM users WHERE email IS NULL OR email = ''");
-    foreach (TEAM as [$name, $email, $role, $default_pw]) {
-        $st = $pdo->prepare('SELECT * FROM users WHERE LOWER(email)=?');
-        $st->execute([strtolower($email)]);
-        $row = $st->fetch();
-        if (!$row) {
-            $pdo->prepare('INSERT INTO users (name, role, email, password_hash, active) VALUES (?,?,?,?,1)')
-                ->execute([$name, $role, $email, password_hash($default_pw, PASSWORD_DEFAULT)]);
+    foreach (TEAM as [$name, $username, $email, $role, $default_pw]) {
+        $st = $pdo->prepare('SELECT id FROM users WHERE LOWER(email)=? OR LOWER(username)=?');
+        $st->execute([strtolower($email), strtolower($username)]);
+        $id = $st->fetchColumn();
+        if ($id === false) {
+            $pdo->prepare('INSERT INTO users (name, username, role, email, password_hash, active) VALUES (?,?,?,?,?,1)')
+                ->execute([$name, $username, $role, $email, password_hash($default_pw, PASSWORD_DEFAULT)]);
         } else {
-            $pdo->prepare('UPDATE users SET name=?, role=? WHERE id=?')->execute([$name, $role, $row['id']]);
-            if (!$row['password_hash'] || !is_php_hash($row['password_hash'])) {
-                $pdo->prepare('UPDATE users SET password_hash=? WHERE id=?')
-                    ->execute([password_hash($default_pw, PASSWORD_DEFAULT), $row['id']]);
+            $st = $pdo->prepare('SELECT password_hash FROM users WHERE id=?');
+            $st->execute([$id]);
+            $h = (string)$st->fetchColumn();
+            if ($h === '' || !is_php_hash($h)) {   // e.g. imported from the old Python version
+                $pdo->prepare('UPDATE users SET password_hash=? WHERE id=?')->execute([password_hash($default_pw, PASSWORD_DEFAULT), $id]);
             }
         }
     }
 }
 
-/** Set every team member back to the starting password listed in TEAM (also re-activates the account). */
+/** Set every TEAM member back to the starting password listed in config.php (also re-activates the account). */
 function reset_team_passwords(PDO $pdo): void
 {
-    foreach (TEAM as [$name, $email, $role, $default_pw]) {
-        $st = $pdo->prepare('SELECT id FROM users WHERE LOWER(email)=?');
-        $st->execute([strtolower($email)]);
-        $id = $st->fetchColumn();
-        $hash = password_hash($default_pw, PASSWORD_DEFAULT);
-        if ($id === false) {
-            $pdo->prepare('INSERT INTO users (name, role, email, password_hash, active) VALUES (?,?,?,?,1)')
-                ->execute([$name, $role, $email, $hash]);
-        } else {
-            $pdo->prepare('UPDATE users SET name=?, role=?, password_hash=?, active=1 WHERE id=?')
-                ->execute([$name, $role, $hash, $id]);
-        }
+    ensure_team($pdo);
+    foreach (TEAM as [$name, $username, $email, $role, $default_pw]) {
+        $pdo->prepare('UPDATE users SET password_hash=?, active=1 WHERE LOWER(email)=? OR LOWER(username)=?')
+            ->execute([password_hash($default_pw, PASSWORD_DEFAULT), strtolower($email), strtolower($username)]);
     }
 }
 

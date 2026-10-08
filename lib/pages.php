@@ -12,11 +12,11 @@
 function page_login(): void
 {
     if (is_post()) {
-        $email = strtolower(trim((string)form('email', '')));
+        $email = strtolower(trim((string)form('email', '')));   // user name or e-mail
         $password = (string)form('password', '');
-        $u = one('SELECT * FROM users WHERE LOWER(email)=? AND active=1', [$email]);
+        $u = one('SELECT * FROM users WHERE (LOWER(email)=? OR LOWER(username)=?) AND active=1', [$email, $email]);
         if ($u === null || !$u['password_hash'] || !password_verify($password, $u['password_hash'])) {
-            flash('Wrong e-mail or password.', 'error');
+            flash('Wrong user name / e-mail or password.', 'error');
             render('login', ['email' => $email], 'Login - AHPC BOM System', 401);
         }
         $_SESSION = [];
@@ -64,11 +64,117 @@ function page_team(): void
 {
     roles_required('Admin');
     render('team', [
-        'users' => all('SELECT * FROM users ORDER BY role, name'),
+        'users' => all("SELECT u.*, (SELECT COUNT(*) FROM requirements WHERE assigned_to=u.id)
+                              + (SELECT COUNT(*) FROM boms WHERE assigned_to=u.id AND COALESCE(source,'')<>'UPLOAD')
+                              + (SELECT COUNT(*) FROM quotations WHERE assigned_to=u.id) AS n_assigned
+                        FROM users u ORDER BY u.role, u.name"),
         'log' => all('SELECT * FROM email_log ORDER BY id DESC LIMIT 100'),
         'mail_ok' => mail_is_configured(),
         'mail' => mail_config(),
-    ], 'Team & Emails');
+    ], 'Users & Emails');
+}
+
+/** Check and normalise the user form. Returns [data, error]. */
+function user_form(?int $id): array
+{
+    $d = [
+        'name' => trim((string)form('name', '')),
+        'username' => strtolower(trim((string)form('username', ''))),
+        'email' => strtolower(trim((string)form('email', ''))),
+        'role' => in_array(form('role'), ROLES, true) ? form('role') : 'Engineer',
+        'active' => form('active', $id ? '0' : '1') === '1' ? 1 : 0,
+    ];
+    if ($d['name'] === '' || $d['username'] === '') {
+        return [$d, 'Name and user name are required.'];
+    }
+    if (!preg_match('/^[a-z0-9._-]{3,60}$/', $d['username'])) {
+        return [$d, 'User name: 3-60 letters, digits, dot, dash or underscore (no spaces).'];
+    }
+    if ($d['email'] !== '' && !filter_var($d['email'], FILTER_VALIDATE_EMAIL)) {
+        return [$d, 'That e-mail address is not valid.'];
+    }
+    if (val('SELECT id FROM users WHERE LOWER(username)=? AND id<>?', [$d['username'], $id ?? 0])) {
+        return [$d, "User name {$d['username']} is already taken."];
+    }
+    if ($d['email'] !== '' && val('SELECT id FROM users WHERE LOWER(email)=? AND id<>?', [$d['email'], $id ?? 0])) {
+        return [$d, "E-mail {$d['email']} is already used by another user."];
+    }
+    return [$d, null];
+}
+
+function other_active_admins(int $id): int
+{
+    return (int)val("SELECT COUNT(*) FROM users WHERE role='Admin' AND active=1 AND id<>?", [$id]);
+}
+
+function page_user_create(): void
+{
+    roles_required('Admin');
+    [$d, $err] = user_form(null);
+    $pw = (string)form('password', '');
+    if (!$err && $pw !== '' && strlen($pw) < 8) {
+        $err = 'Password must be at least 8 characters (or leave it empty to generate one).';
+    }
+    if ($err) {
+        flash($err, 'error');
+        redirect(url('/team'));
+    }
+    $generated = $pw === '';
+    $pw = $generated ? new_password() : $pw;
+    insert('INSERT INTO users (name, username, email, role, password_hash, active) VALUES (?, ?, ?, ?, ?, 1)',
+           [$d['name'], $d['username'], $d['email'] ?: null, $d['role'], password_hash($pw, PASSWORD_DEFAULT)]);
+    flash("User {$d['name']} created ({$d['role']}). Login: {$d['username']}" . ($generated ? "  password: $pw  - share it now; it is not shown again." : '.'));
+    redirect(url('/team'));
+}
+
+function page_user_edit(int $user_id): void
+{
+    roles_required('Admin');
+    $u = one('SELECT * FROM users WHERE id=?', [$user_id]) ?? abort(404);
+    [$d, $err] = user_form($user_id);
+    if (!$err && $u['role'] === 'Admin' && ($d['role'] !== 'Admin' || !$d['active']) && other_active_admins($user_id) === 0) {
+        $err = 'There must always be at least one active admin.';
+    }
+    if (!$err && $user_id === (int)$_SESSION['user_id'] && !$d['active']) {
+        $err = 'You cannot deactivate your own login.';
+    }
+    $pw = (string)form('password', '');
+    if (!$err && $pw !== '' && strlen($pw) < 8) {
+        $err = 'Password must be at least 8 characters.';
+    }
+    if ($err) {
+        flash($err, 'error');
+        redirect(url('/team'));
+    }
+    q('UPDATE users SET name=?, username=?, email=?, role=?, active=? WHERE id=?',
+      [$d['name'], $d['username'], $d['email'] ?: null, $d['role'], $d['active'], $user_id]);
+    if ($pw !== '') {
+        q('UPDATE users SET password_hash=? WHERE id=?', [password_hash($pw, PASSWORD_DEFAULT), $user_id]);
+    }
+    flash("User {$d['name']} saved" . ($pw !== '' ? ' with the new password.' : '.'));
+    redirect(url('/team'));
+}
+
+function page_user_delete(int $user_id): void
+{
+    roles_required('Admin');
+    $u = one('SELECT * FROM users WHERE id=?', [$user_id]) ?? abort(404);
+    if ($user_id === (int)$_SESSION['user_id']) {
+        flash('You cannot delete your own login.', 'error');
+        redirect(url('/team'));
+    }
+    if ($u['role'] === 'Admin' && $u['active'] && other_active_admins($user_id) === 0) {
+        flash('There must always be at least one active admin.', 'error');
+        redirect(url('/team'));
+    }
+    foreach (KIND_TABLE as $t) {   // their work goes back to "unassigned"; remarks keep the author's name
+        q("UPDATE $t SET assigned_to=NULL WHERE assigned_to=?", [$user_id]);
+        q("UPDATE $t SET assigned_by=NULL WHERE assigned_by=?", [$user_id]);
+    }
+    q('UPDATE remarks SET author_id=NULL WHERE author_id=?', [$user_id]);
+    q('DELETE FROM users WHERE id=?', [$user_id]);
+    flash("User {$u['name']} deleted. Their open work is now unassigned.");
+    redirect(url('/team'));
 }
 
 function page_reset_password(int $user_id): void
@@ -150,17 +256,84 @@ function page_dashboard(): void
 {
     login_required();
     $all_pending = pending_quotes();
-    $mine = arg('mine') === '1';
     $uid = (int)$_SESSION['user_id'];
+    $mine = arg('mine') === '1';
+    $person = arg('person');          // user id, or 'none' for unassigned
+    $search = trim((string)arg('q', ''));
     $my_open = array_values(array_filter($all_pending, fn($p) => $p['assignee_id'] === $uid));
+
+    // pending work per person (every active user is listed, also with 0)
+    $people = [];
+    foreach (team_users() as $u) {
+        $people[(int)$u['id']] = ['id' => (int)$u['id'], 'name' => $u['name'], 'role' => $u['role'], 'items' => [], 'overdue' => 0];
+    }
+    $unassigned = ['id' => 'none', 'name' => 'Unassigned', 'role' => '', 'items' => [], 'overdue' => 0];
+    $shown = $mine ? $my_open : $all_pending;
+    if ($search !== '') {
+        $needle = mb_strtolower($search);
+        $shown = array_values(array_filter($shown, fn($p) => str_contains(mb_strtolower(
+            $p['ref'] . ' ' . $p['title'] . ' ' . $p['company'] . ' ' . $p['assignee'] . ' ' . $p['stage']), $needle)));
+    }
+    foreach ($shown as $p) {
+        $key = $p['assignee_id'];
+        if ($key !== null && !isset($people[$key])) {   // assigned to a disabled user
+            $people[$key] = ['id' => $key, 'name' => $p['assignee'] ?? 'Former user', 'role' => '', 'items' => [], 'overdue' => 0];
+        }
+        if ($key === null) {
+            $unassigned['items'][] = $p;
+            $unassigned['overdue'] += $p['overdue'] ? 1 : 0;
+        } else {
+            $people[$key]['items'][] = $p;
+            $people[$key]['overdue'] += $p['overdue'] ? 1 : 0;
+        }
+    }
+    $groups = array_values($people);
+    usort($groups, fn($a, $b) => [$a['role'] !== 'Admin', $a['name']] <=> [$b['role'] !== 'Admin', $b['name']]);
+    $groups[] = $unassigned;
+    $chips = $groups;
+    if ($person !== null && $person !== '') {
+        $groups = array_values(array_filter($groups, fn($g) => (string)$g['id'] === (string)$person));
+    }
+    $groups = array_values(array_filter($groups, fn($g) => $g['items']));
+
     $counts = [
         'requirements' => (int)val('SELECT COUNT(*) FROM requirements'),
-        'boms' => (int)val('SELECT COUNT(DISTINCT bom_number) FROM boms'),
+        'boms' => (int)val("SELECT COUNT(DISTINCT bom_number) FROM boms WHERE COALESCE(source,'') <> 'UPLOAD'"),
+        'library' => (int)val("SELECT COUNT(*) FROM boms WHERE source = 'UPLOAD'"),
         'pending' => count($all_pending),
         'quotes' => (int)val('SELECT COUNT(*) FROM quotations'),
     ];
-    render('dashboard', ['counts' => $counts, 'pending' => $mine ? $my_open : $all_pending, 'mine' => $mine,
-                         'my_count' => count($my_open), 'users' => team_users()], 'Dashboard - AHPC BOM System');
+    render('dashboard', ['counts' => $counts, 'groups' => $groups, 'chips' => $chips, 'mine' => $mine, 'person' => $person,
+                         'my_count' => count($my_open), 'users' => team_users(), 'q' => $search,
+                         'results' => $search !== '' ? global_search($search) : null], 'Dashboard - AHPC BOM System');
+}
+
+/** Keyword search over customers, requirements, BOMs and quotations (every word must match). */
+function global_search(string $q): array
+{
+    $words = array_values(array_filter(preg_split('/\s+/u', $q)));
+    $cond = function (array $cols) use ($words): array {
+        $parts = [];
+        $params = [];
+        foreach ($words as $w) {
+            $parts[] = '(' . implode(' OR ', array_map(fn($c) => "$c LIKE ?", $cols)) . ')';
+            array_push($params, ...array_fill(0, count($cols), "%$w%"));
+        }
+        return [implode(' AND ', $parts), $params];
+    };
+    [$w, $p] = $cond(['c.company', 'c.contact_person', 'c.email', 'c.phone', 'c.address']);
+    $customers = all("SELECT c.*, (SELECT COUNT(*) FROM boms b WHERE b.customer_id=c.id) n_boms,
+                             (SELECT COUNT(*) FROM requirements r WHERE r.customer_id=c.id) n_reqs
+                      FROM customers c WHERE $w ORDER BY c.company LIMIT 25", $p);
+    [$w, $p] = $cond(['r.req_number', 'r.title', 'r.description', 'r.sales_person', 'r.remarks', 'c.company']);
+    $requirements = all("SELECT r.*, c.company, u.name AS assignee FROM requirements r LEFT JOIN customers c ON c.id=r.customer_id
+                         LEFT JOIN users u ON u.id=r.assigned_to WHERE $w ORDER BY r.id DESC LIMIT 25", $p);
+    [$w, $p] = $cond(['b.title', 'b.bom_number', 'b.source_file', 'c.company',
+                      "(SELECT GROUP_CONCAT(CONCAT_WS(' ', i.category, i.manufacturer, i.part_number, i.description) SEPARATOR ' ') FROM bom_items i WHERE i.bom_id=b.id)"]);
+    $boms = all("SELECT b.*, c.company FROM boms b LEFT JOIN customers c ON c.id=b.customer_id WHERE $w ORDER BY b.id DESC LIMIT 25", $p);
+    [$w, $p] = $cond(['q.quote_number', 'q.to_company', 'q.subject', 'q.specs', 'c.company']);
+    $quotes = all("SELECT q.*, c.company FROM quotations q LEFT JOIN customers c ON c.id=q.customer_id WHERE $w ORDER BY q.id DESC LIMIT 25", $p);
+    return compact('customers', 'requirements', 'boms', 'quotes');
 }
 
 function month_keys(int $n = 6): array
@@ -180,60 +353,74 @@ function month_keys(int $n = 6): array
 function page_analytics(): void
 {
     login_required();
-    $latest = LATEST_BOM;
-    $months = month_keys(6);
-    $monthly = function (string $table) use ($months): array {
+    $work = "COALESCE(b.source,'') <> 'UPLOAD'";
+    $latest = LATEST_BOM . " AND $work";
+    $months = month_keys(12);
+    $monthly = function (string $table, string $extra = '') use ($months): array {
         $data = array_fill_keys($months, 0);
-        foreach (all("SELECT DATE_FORMAT(created_at, '%Y-%m') m, COUNT(*) c FROM $table GROUP BY m") as $r) {
+        foreach (all("SELECT DATE_FORMAT(created_at, '%Y-%m') m, COUNT(*) c FROM $table b WHERE 1=1 $extra GROUP BY m") as $r) {
             if (isset($data[$r['m']])) {
                 $data[$r['m']] = (int)$r['c'];
             }
         }
         return array_values($data);
     };
-
     $qval = array_fill_keys($months, 0);
     foreach (all("SELECT DATE_FORMAT(created_at, '%Y-%m') m, SUM(grand_total) s FROM quotations GROUP BY m") as $r) {
         if (isset($qval[$r['m']])) {
             $qval[$r['m']] = (int)pyround($r['s'] ?? 0);
         }
     }
+    $pairs = fn(array $rows, string $k, string $v) => array_map(fn($r) => [(string)($r[$k] ?? '-'), (int)pyround($r[$v] ?? 0)], $rows);
+
     $bom_status = array_map(fn($r) => [ucwords(strtolower(str_replace('_', ' ', $r['status']))), (int)$r['c']],
-                            all("SELECT status, COUNT(*) c FROM boms b WHERE $latest GROUP BY status"));
-    $by_customer = array_map(fn($r) => [$r['company'] ?? '-', (int)pyround($r['s'] ?? 0)],
-                             all('SELECT c.company, SUM(qt.grand_total) s, COUNT(*) n FROM quotations qt
-                                  LEFT JOIN customers c ON c.id=qt.customer_id GROUP BY c.company ORDER BY s DESC LIMIT 8'));
-    $by_category = array_map(fn($r) => [($r['cat'] ?? '') !== '' ? $r['cat'] : 'Other', (int)pyround($r['s'] ?? 0)],
-                             all("SELECT it.category cat, SUM(it.quantity*it.unit_price) s FROM bom_items it
-                                  JOIN boms b ON b.id=it.bom_id WHERE $latest GROUP BY it.category ORDER BY s DESC LIMIT 10"));
-    $quote_rows = array_reverse(all('SELECT quote_number, subtotal, margin_amount, gst_amount FROM quotations ORDER BY id DESC LIMIT 8'));
-    $quote_split = array_map(fn($r) => ['#' . substr(preg_replace('/\D/', '', (string)$r['quote_number']), -5),
-                                        (int)pyround($r['subtotal'] ?? 0), (int)pyround($r['margin_amount'] ?? 0),
+                            all("SELECT status, COUNT(*) c FROM boms b WHERE $latest GROUP BY status ORDER BY c DESC"));
+    $by_customer = $pairs(all("SELECT COALESCE(c.company, qt.to_company, '-') company, SUM(qt.grand_total) s FROM quotations qt
+                               LEFT JOIN customers c ON c.id=qt.customer_id GROUP BY company ORDER BY s DESC LIMIT 10"), 'company', 's');
+    $by_category = $pairs(all("SELECT CASE WHEN it.category IS NULL OR it.category='' THEN 'Other' ELSE it.category END cat,
+                                      SUM(it.quantity*it.unit_price) s FROM bom_items it JOIN boms b ON b.id=it.bom_id
+                               WHERE " . LATEST_BOM . " GROUP BY cat ORDER BY s DESC LIMIT 12"), 'cat', 's');
+    $library_customers = $pairs(all("SELECT COALESCE(c.company,'(no customer)') company, COUNT(*) n FROM boms b
+                                     LEFT JOIN customers c ON c.id=b.customer_id WHERE b.source='UPLOAD' GROUP BY company ORDER BY n DESC LIMIT 12"), 'company', 'n');
+    $quote_rows = array_reverse(all('SELECT quote_number, subtotal, margin_amount, gst_amount FROM quotations ORDER BY id DESC LIMIT 10'));
+    $quote_split = array_map(fn($r) => [(string)$r['quote_number'], (int)pyround($r['subtotal'] ?? 0), (int)pyround($r['margin_amount'] ?? 0),
                                         (int)pyround($r['gst_amount'] ?? 0)], $quote_rows);
 
     $pending = pending_quotes();
+    $by_person = [];
+    foreach (team_users() as $u) {
+        $by_person[$u['name']] = [0, 0];
+    }
+    foreach ($pending as $p) {
+        $k = $p['assignee'] ?? 'Unassigned';
+        $by_person[$k] ??= [0, 0];
+        $by_person[$k][$p['overdue'] ? 1 : 0]++;
+    }
     $by_owner = [];
     foreach ($pending as $p) {
         $by_owner[$p['pending_by']] = ($by_owner[$p['pending_by']] ?? 0) + 1;
     }
+    $done_by = $pairs(all("SELECT COALESCE(u.name, 'Unassigned') n, COUNT(*) c FROM quotations q LEFT JOIN users u ON u.id=q.assigned_to
+                           GROUP BY n ORDER BY c DESC"), 'n', 'c');
 
     $n_req = (int)val('SELECT COUNT(*) FROM requirements');
-    $n_bom = (int)val('SELECT COUNT(DISTINCT bom_number) FROM boms');
+    $n_bom = (int)val("SELECT COUNT(DISTINCT bom_number) FROM boms b WHERE $work");
     $n_appr = (int)val("SELECT COUNT(*) FROM boms b WHERE $latest AND status IN ('APPROVED','QUOTED')");
     $n_quote = (int)val('SELECT COUNT(*) FROM quotations');
     $n_sent = (int)val("SELECT COUNT(*) FROM quotations WHERE status='SENT'");
     $total_val = (float)val('SELECT COALESCE(SUM(grand_total),0) FROM quotations');
     $sent_val = (float)val("SELECT COALESCE(SUM(grand_total),0) FROM quotations WHERE status='SENT'");
-    $sales_rows = all("SELECT COALESCE(sales_person,'-') sp, COUNT(*) c FROM requirements GROUP BY sp ORDER BY c DESC LIMIT 8");
+    $sales_rows = all("SELECT COALESCE(NULLIF(sales_person,''),'-') sp, COUNT(*) c FROM requirements GROUP BY sp ORDER BY c DESC LIMIT 10");
 
     $data = [
-        'months' => $months,
-        'req_m' => $monthly('requirements'), 'bom_m' => $monthly('boms'), 'quote_m' => $monthly('quotations'),
+        'months' => array_map(fn($m) => date('M y', strtotime("$m-01")), $months),
+        'req_m' => $monthly('requirements'), 'bom_m' => $monthly('boms', "AND $work"), 'quote_m' => $monthly('quotations'),
         'quote_value_m' => array_values($qval),
-        'funnel' => [['Requirements', $n_req], ['BOMs', $n_bom], ['Approved', $n_appr], ['Quotes', $n_quote], ['Sent', $n_sent]],
+        'funnel' => [['Requirements', $n_req], ['BOMs', $n_bom], ['Approved', $n_appr], ['Quotations', $n_quote], ['Sent', $n_sent]],
         'bom_status' => $bom_status, 'by_customer' => $by_customer, 'by_category' => $by_category,
-        'quote_split' => $quote_split,
-        'pending_owner' => array_map(fn($k, $v) => [$k, $v], array_keys($by_owner), array_values($by_owner)),
+        'quote_split' => $quote_split, 'pending_owner' => array_map(fn($k, $v) => [$k, $v], array_keys($by_owner), array_values($by_owner)),
+        'by_person' => array_map(fn($k, $v) => [$k, $v[0], $v[1]], array_keys($by_person), array_values($by_person)),
+        'done_by' => $done_by, 'library_customers' => $library_customers,
         'by_sales' => array_map(fn($r) => [$r['sp'], (int)$r['c']], $sales_rows),
     ];
     $kpis = [
@@ -241,6 +428,8 @@ function page_analytics(): void
         'quote_value' => $total_val, 'sent_value' => $sent_val,
         'avg_quote' => $n_quote ? $total_val / $n_quote : 0,
         'customers' => (int)val('SELECT COUNT(*) FROM customers'),
+        'library' => (int)val("SELECT COUNT(*) FROM boms WHERE source='UPLOAD'"),
+        'overdue' => count(array_filter($pending, fn($p) => $p['overdue'])),
         'conversion' => $n_req ? (int)pyround(100.0 * $n_sent / $n_req) : 0,
     ];
     render('analytics', ['data' => $data, 'kpis' => $kpis], 'Analytics - AHPC BOM System');
@@ -259,7 +448,11 @@ function page_customers(): void
         flash('Customer added.');
         redirect(url('/customers'));
     }
-    render('customers', ['customers' => all('SELECT * FROM customers ORDER BY company')], 'Customers');
+    $search = trim((string)arg('q', ''));
+    $rows = all("SELECT c.*, (SELECT COUNT(*) FROM boms b WHERE b.customer_id = c.id) AS n_boms FROM customers c"
+                . ($search !== '' ? ' WHERE c.company LIKE ? OR c.contact_person LIKE ? OR c.email LIKE ?' : '') . ' ORDER BY c.company',
+                $search !== '' ? array_fill(0, 3, "%$search%") : []);
+    render('customers', ['customers' => $rows, 'q' => $search], 'Customers');
 }
 
 // ---------------------------------------------------------------------------
@@ -349,8 +542,12 @@ function page_components(): void
         $sql .= ' AND category = ?';
         $params[] = $category;
     }
-    $sql .= ' ORDER BY category, manufacturer';
+    $total = (int)val(str_replace('SELECT *', 'SELECT COUNT(*)', $sql), $params);
+    $page = max(1, (int)arg('page', 1));
+    $per_page = 100;
+    $sql .= ' ORDER BY category, manufacturer, part_number LIMIT ' . $per_page . ' OFFSET ' . (($page - 1) * $per_page);
     render('components', [
+        'total' => $total, 'page' => $page, 'pages' => max(1, (int)ceil($total / $per_page)),
         'components' => all($sql, $params),
         'categories' => q('SELECT DISTINCT category FROM components ORDER BY category')->fetchAll(PDO::FETCH_COLUMN),
         'q' => $search, 'category' => $category,
@@ -369,20 +566,85 @@ function page_components_rebuild(): void
 // Step 4: BOMs (search -> create -> edit at ANY time -> clone to make another BOM)
 // ---------------------------------------------------------------------------
 
-/** All existing BOMs with every component, qty and price visible; each can be edited or cloned. */
+/**
+ * BOMs page. Tab "library" (default) = the BOMs uploaded from Excel / Zoho sheets, tab "working" = BOMs made in
+ * the app. Every BOM shows all its components and can be used, customized or opened as a new BOM.
+ */
 function page_boms_list(): void
 {
     login_required();
     $search = trim((string)arg('q', ''));
-    $sql = 'SELECT b.*, c.company FROM boms b LEFT JOIN customers c ON c.id = b.customer_id WHERE 1=1';
+    $tab = arg('tab') === 'working' ? 'working' : 'library';
+    $page = max(1, (int)arg('page', 1));
+    $per_page = 40;
+    $where = $tab === 'library' ? "b.source = 'UPLOAD'" : "COALESCE(b.source, '') <> 'UPLOAD'";
     $params = [];
     if ($search !== '') {
-        $sql .= ' AND (b.title LIKE ? OR b.bom_number LIKE ? OR c.company LIKE ? OR EXISTS
-                  (SELECT 1 FROM bom_items i WHERE i.bom_id=b.id AND (i.part_number LIKE ? OR i.description LIKE ? OR i.category LIKE ?)))';
-        $params = array_fill(0, 6, "%$search%");
+        foreach (preg_split('/\s+/u', $search) as $w) {
+            $where .= ' AND (b.title LIKE ? OR b.bom_number LIKE ? OR c.company LIKE ? OR b.source_file LIKE ? OR EXISTS
+                       (SELECT 1 FROM bom_items i WHERE i.bom_id=b.id AND (i.part_number LIKE ? OR i.description LIKE ?
+                        OR i.category LIKE ? OR i.manufacturer LIKE ?)))';
+            array_push($params, ...array_fill(0, 8, "%$w%"));
+        }
     }
-    $rows = all($sql . ' ORDER BY b.id DESC', $params);
-    render('boms_list', ['boms' => $rows, 'detail' => bom_totals_for($rows), 'q' => $search], 'BOMs');
+    $from = "FROM boms b LEFT JOIN customers c ON c.id = b.customer_id WHERE $where";
+    $total = (int)val("SELECT COUNT(*) $from", $params);
+    $rows = all("SELECT b.*, c.company $from ORDER BY " . ($tab === 'library' ? 'c.company IS NULL, c.company, b.title, b.id' : 'b.id DESC')
+                . ' LIMIT ' . $per_page . ' OFFSET ' . (($page - 1) * $per_page), $params);
+    $counts = [
+        'library' => (int)val("SELECT COUNT(*) FROM boms WHERE source = 'UPLOAD'"),
+        'working' => (int)val("SELECT COUNT(*) FROM boms WHERE COALESCE(source, '') <> 'UPLOAD'"),
+    ];
+    render('boms_list', ['boms' => $rows, 'detail' => bom_totals_for($rows), 'q' => $search, 'tab' => $tab, 'page' => $page,
+                         'pages' => max(1, (int)ceil($total / $per_page)), 'total' => $total, 'counts' => $counts], 'BOMs');
+}
+
+/** Upload one or more BOM sheets (.xlsx / Zoho .html) into the BOM library. */
+function page_bom_upload(): void
+{
+    login_required();
+    require_once __DIR__ . '/bom_import.php';
+    $files = $_FILES['files'] ?? null;
+    $made = [];
+    $problems = [];
+    if ($files && is_array($files['name'])) {
+        foreach ($files['name'] as $i => $name) {
+            if ($files['error'][$i] === UPLOAD_ERR_NO_FILE) {
+                continue;
+            }
+            if ($files['error'][$i] !== UPLOAD_ERR_OK) {
+                $problems[] = "$name: upload failed (error {$files['error'][$i]})";
+                continue;
+            }
+            try {
+                $recs = parse_bom_file($files['tmp_name'][$i], $name);
+                if (!$recs) {
+                    $problems[] = "$name: no BOM table found (needs a 'Components / Model / Quantity / Unit Price' table)";
+                    continue;
+                }
+                $ids = save_uploaded_boms($recs, current_user_name() ?? 'Upload');
+                $made = array_merge($made, $ids);
+                if (count($ids) < count($recs)) {
+                    $problems[] = "$name: " . (count($recs) - count($ids)) . ' BOM(s) were already in the library and were skipped';
+                }
+            } catch (Throwable $e) {
+                $problems[] = "$name: " . $e->getMessage();
+            }
+        }
+    }
+    if ($made) {
+        foreach (all('SELECT * FROM bom_items WHERE bom_id IN (' . implode(',', array_map('intval', $made)) . ')') as $it) {
+            add_component_from_line($it);
+        }
+        flash(count($made) . ' BOM(s) added to the library.');
+    }
+    foreach ($problems as $p) {
+        flash($p, 'error');
+    }
+    if (!$made && !$problems) {
+        flash('Choose one or more .xlsx files first.', 'error');
+    }
+    redirect(url('/boms', ['tab' => 'library']));
 }
 
 /**
@@ -439,12 +701,14 @@ function page_bom_new(): void
         $bom_number = next_number('boms', 'bom_number', 'BOM');
         $me = me();
         [$owner, $due] = inherited_owner($requirement_id, $me);
+        $src = int_or_null(form('copy_from'));
+        $src_bom = $src ? one('SELECT * FROM boms WHERE id=?', [$src]) : null;
         $new_bom_id = insert(
             "INSERT INTO boms (bom_number, version, requirement_id, customer_id, title, status,
-                               pricing_mode, margin_percent, gst_percent, created_by, created_at, assigned_to, due_date)
-             VALUES (?, 1, ?, ?, ?, 'DRAFT', 'AUTOMATIC', 15, 18, ?, ?, ?, ?)",
-            [$bom_number, $requirement_id, $customer_id, form('title'), current_user_name(), now_str(), $owner, $due]);
-        $src = int_or_null(form('copy_from'));
+                               pricing_mode, margin_percent, gst_percent, created_by, created_at, assigned_to, due_date, parent_bom_id)
+             VALUES (?, 1, ?, ?, ?, 'DRAFT', 'AUTOMATIC', ?, ?, ?, ?, ?, ?, NULL)",
+            [$bom_number, $requirement_id, $customer_id, form('title'), $src_bom['margin_percent'] ?? 15, $src_bom['gst_percent'] ?? 18,
+             current_user_name(), now_str(), $owner, $due]);
         if ($src) {
             copy_items($src, $new_bom_id);
         }
@@ -457,7 +721,71 @@ function page_bom_new(): void
     $copy_bom = $copy_from ? one('SELECT * FROM boms WHERE id=?', [$copy_from]) : null;
     $items = $copy_bom ? all('SELECT * FROM bom_items WHERE bom_id=?', [$copy_from]) : [];
     render('bom_new', ['requirement' => $requirement, 'customers' => all('SELECT * FROM customers ORDER BY company'),
-                       'copy_bom' => $copy_bom, 'copy_items' => $items], 'Create BOM');
+                       'copy_bom' => $copy_bom, 'copy_items' => $items, 'requirements' => open_requirements()], 'Create BOM');
+}
+
+function open_requirements(): array
+{
+    return all('SELECT r.id, r.req_number, r.title, r.customer_id, c.company FROM requirements r
+                LEFT JOIN customers c ON c.id = r.customer_id ORDER BY r.id DESC LIMIT 300');
+}
+
+/**
+ * Customize: pick which lines of an existing (e.g. uploaded) BOM to keep, change models / quantities / prices,
+ * add lines, then save it as a NEW draft BOM for a customer / requirement. The original is not changed.
+ */
+function page_bom_customize(int $bom_id): void
+{
+    login_required();
+    $bom = load_bom($bom_id);
+    $items = bom_items($bom_id);
+    if (is_post()) {
+        $customer_id = resolve_customer();
+        if (!$customer_id) {
+            flash('Please select a customer, or enter the company name of the new customer.', 'error');
+            redirect(url("/boms/$bom_id/customize"));
+        }
+        $lines = [];
+        foreach ((array)($_POST['line'] ?? []) as $l) {
+            if (empty($l['keep'])) {
+                continue;
+            }
+            $cat = trim((string)($l['category'] ?? ''));
+            $model = trim((string)($l['part_number'] ?? ''));
+            if ($cat === '' && $model === '') {
+                continue;
+            }
+            $lines[] = [$cat !== '' ? $cat : 'Other', trim((string)($l['manufacturer'] ?? '')), $model,
+                        trim((string)($l['description'] ?? '')), to_int($l['quantity'] ?? 1, 1, 1), to_int($l['unit_price'] ?? 0, 0, 0)];
+        }
+        if (!$lines) {
+            flash('Keep at least one line.', 'error');
+            redirect(url("/boms/$bom_id/customize"));
+        }
+        $requirement_id = int_or_null(form('requirement_id'));
+        $me = me();
+        [$owner, $due] = inherited_owner($requirement_id, $me);
+        $bom_number = next_number('boms', 'bom_number', 'BOM');
+        $new_id = insert(
+            "INSERT INTO boms (bom_number, version, requirement_id, customer_id, title, status, pricing_mode, margin_percent,
+                               gst_percent, created_by, created_at, assigned_to, due_date)
+             VALUES (?, 1, ?, ?, ?, 'DRAFT', 'CUSTOMIZED', ?, ?, ?, ?, ?, ?)",
+            [$bom_number, $requirement_id, $customer_id, (string)form('title', $bom['title']), (float)form('margin_percent', 15),
+             (float)form('gst_percent', 18), current_user_name(), now_str(), $owner, $due]);
+        foreach ($lines as $l) {
+            q('INSERT INTO bom_items (bom_id, category, manufacturer, part_number, description, quantity, unit_price)
+               VALUES (?, ?, ?, ?, ?, ?, ?)', array_merge([$new_id], $l));
+        }
+        add_remark('bom', $new_id, $me, 'SYSTEM', "Customized from {$bom['bom_number']} ({$bom['title']})");
+        notify_event('bom', $new_id, 'BOM_NEW', 'BOM created (customized)',
+                     "{$me['name']} created $bom_number by customizing {$bom['bom_number']}.", $me);
+        flash("BOM $bom_number created from {$bom['bom_number']}.");
+        redirect(url("/boms/$new_id"));
+    }
+    $requirement_id = int_or_null(arg('requirement_id'));
+    render('bom_customize', ['bom' => $bom, 'items' => $items, 'customers' => all('SELECT * FROM customers ORDER BY company'),
+                             'requirements' => open_requirements(), 'requirement_id' => $requirement_id,
+                             'totals' => compute_bom_totals($bom, $items)], 'Customize ' . $bom['bom_number']);
 }
 
 /** Create ANOTHER BOM from an existing one (new BOM number, all components copied, draft). */
@@ -788,10 +1116,112 @@ function page_quote_pdf(int $quote_id): void
 {
     login_required();
     $ctx = quote_context(load_quote($quote_id));
-    $pdf = docx_to_pdf(build_docx($ctx));
-    if ($pdf === null) {
-        flash('PDF export needs LibreOffice on the server. Download the Word file and use Save as PDF instead.', 'error');
-        redirect(url("/quotes/$quote_id"));
-    }
+    // LibreOffice (if installed) converts the Word file 1:1; otherwise the built-in PDF writer draws the same layout
+    $pdf = docx_to_pdf(build_docx($ctx)) ?? build_quote_pdf($ctx);
     send_download($pdf, "Quotation_{$ctx['quote_number']}.pdf", 'application/pdf');
+}
+
+// ---------------------------------------------------------------------------
+// Deleting (admins only)
+// ---------------------------------------------------------------------------
+
+function delete_quote_rows(array $quote_ids): void
+{
+    foreach ($quote_ids as $qid) {
+        $qid = (int)$qid;
+        foreach (q('SELECT id FROM orders WHERE quote_id=?', [$qid])->fetchAll(PDO::FETCH_COLUMN) as $oid) {
+            q('DELETE FROM procurement WHERE order_id=?', [$oid]);
+        }
+        q('DELETE FROM orders WHERE quote_id=?', [$qid]);
+        q("DELETE FROM remarks WHERE kind='quote' AND item_id=?", [$qid]);
+        q('DELETE FROM quotations WHERE id=?', [$qid]);
+    }
+}
+
+function page_bom_delete(int $bom_id): void
+{
+    roles_required('Admin');
+    $bom = load_bom($bom_id);
+    $pdo = db();
+    $pdo->beginTransaction();
+    delete_quote_rows(q('SELECT id FROM quotations WHERE bom_id=?', [$bom_id])->fetchAll(PDO::FETCH_COLUMN));
+    q('DELETE FROM bom_items WHERE bom_id=?', [$bom_id]);
+    q("DELETE FROM remarks WHERE kind='bom' AND item_id=?", [$bom_id]);
+    q('UPDATE boms SET parent_bom_id=NULL WHERE parent_bom_id=?', [$bom_id]);
+    q('DELETE FROM boms WHERE id=?', [$bom_id]);
+    $pdo->commit();
+    flash("BOM {$bom['bom_number']} ({$bom['title']}) deleted.");
+    $back = referer_path();
+    redirect($back && !str_contains($back, "/boms/$bom_id") ? $back : url('/boms', ['tab' => $bom['source'] === 'UPLOAD' ? 'library' : 'working']));
+}
+
+function page_quote_delete(int $quote_id): void
+{
+    roles_required('Admin');
+    $qt = one('SELECT * FROM quotations WHERE id=?', [$quote_id]) ?? abort(404);
+    delete_quote_rows([$quote_id]);
+    // the BOM can be quoted again
+    if ($qt['bom_id'] && !val('SELECT 1 FROM quotations WHERE bom_id=?', [$qt['bom_id']])) {
+        q("UPDATE boms SET status='APPROVED' WHERE id=? AND status='QUOTED'", [$qt['bom_id']]);
+    }
+    flash("Quotation {$qt['quote_number']} deleted.");
+    redirect(url('/quotes'));
+}
+
+function page_component_delete(int $id): void
+{
+    roles_required('Admin');
+    $c = one('SELECT * FROM components WHERE id=?', [$id]) ?? abort(404);
+    q('DELETE FROM components WHERE id=?', [$id]);   // BOM lines keep their text; only the link is cleared
+    flash("Component {$c['category']} - {$c['part_number']} deleted.");
+    redirect(referer_path() ?? url('/components'));
+}
+
+function page_components_delete_selected(): void
+{
+    roles_required('Admin');
+    $ids = array_filter(array_map('intval', (array)($_POST['ids'] ?? [])));
+    if ($ids) {
+        q('DELETE FROM components WHERE id IN (' . implode(',', $ids) . ')');
+    }
+    flash(count($ids) . ' component(s) deleted.');
+    redirect(referer_path() ?? url('/components'));
+}
+
+function page_customer_delete(int $id): void
+{
+    roles_required('Admin');
+    $c = one('SELECT * FROM customers WHERE id=?', [$id]) ?? abort(404);
+    foreach (['requirements', 'boms', 'quotations'] as $t) {
+        q("UPDATE $t SET customer_id=NULL WHERE customer_id=?", [$id]);
+    }
+    q('DELETE FROM customers WHERE id=?', [$id]);
+    flash("Customer {$c['company']} deleted (their BOMs and quotations are kept).");
+    redirect(url('/customers'));
+}
+
+function page_customer_edit(int $id): void
+{
+    roles_required('Admin');
+    one('SELECT id FROM customers WHERE id=?', [$id]) ?? abort(404);
+    $company = trim((string)form('company', ''));
+    if ($company === '') {
+        flash('Company name is required.', 'error');
+    } else {
+        q('UPDATE customers SET company=?, contact_person=?, email=?, phone=?, address=? WHERE id=?',
+          [$company, form('contact_person'), form('email'), form('phone'), form('address'), $id]);
+        flash("Customer $company saved.");
+    }
+    redirect(url('/customers'));
+}
+
+function page_requirement_delete(int $id): void
+{
+    roles_required('Admin');
+    $r = one('SELECT * FROM requirements WHERE id=?', [$id]) ?? abort(404);
+    q('UPDATE boms SET requirement_id=NULL WHERE requirement_id=?', [$id]);
+    q("DELETE FROM remarks WHERE kind='req' AND item_id=?", [$id]);
+    q('DELETE FROM requirements WHERE id=?', [$id]);
+    flash("Requirement {$r['req_number']} deleted (its BOMs are kept).");
+    redirect(url('/requirements'));
 }

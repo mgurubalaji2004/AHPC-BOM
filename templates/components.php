@@ -29,12 +29,16 @@
 
 <div class="grid-2">
   <div class="card" style="grid-column: span 2;">
-    <div class="section-title" style="margin-top:0;">Results (<?= count($components) ?>)</div>
-    <?php if ($components): ?>
+    <div class="section-title" style="margin-top:0;">Results (<?= $total ?>)</div>
+    <?php if ($components): $is_admin = current_role() === 'Admin'; ?>
+    <form method="post" action="<?= e(url('/components/delete_selected')) ?>" onsubmit="return confirm('Delete the selected components?')">
+    <?php if ($is_admin): ?><div style="margin-bottom:8px;"><button class="btn small danger" type="submit">Delete selected</button>
+      <label style="font-size:0.85rem;margin-left:8px;"><input type="checkbox" onclick="document.querySelectorAll('.csel').forEach(c => c.checked = this.checked)"> select all shown</label></div><?php endif; ?>
     <table>
-      <tr><th>Category</th><th>Manufacturer</th><th>Part No.</th><th>Description</th><th>Cost</th><th>Selling Price</th><th>Stock</th></tr>
+      <tr><?php if ($is_admin): ?><th></th><?php endif; ?><th>Category</th><th>Manufacturer</th><th>Part No.</th><th>Description</th><th>Cost</th><th>Selling Price</th><th>Stock</th><?php if ($is_admin): ?><th></th><?php endif; ?></tr>
       <?php foreach ($components as $c): ?>
       <tr>
+        <?php if ($is_admin): ?><td><input type="checkbox" class="csel" name="ids[]" value="<?= e($c['id']) ?>"></td><?php endif; ?>
         <td><?= e($c['category']) ?></td>
         <td><?= e($c['manufacturer'] ?: '-') ?></td>
         <td><?= e($c['part_number'] ?: '-') ?></td>
@@ -42,9 +46,18 @@
         <td>₹<?= inr($c['cost']) ?></td>
         <td>₹<?= inr($c['selling_price']) ?></td>
         <td><?php if ((int)$c['stock'] < 3): ?><span class="badge red"><?= e($c['stock']) ?></span><?php else: ?><?= e($c['stock']) ?><?php endif; ?></td>
+        <?php if ($is_admin): ?><td><button class="btn small danger" type="submit" formaction="<?= e(url("/components/{$c['id']}/delete")) ?>" formnovalidate onclick="return confirm('Delete this component?')">Delete</button></td><?php endif; ?>
       </tr>
       <?php endforeach; ?>
     </table>
+    </form>
+    <?php if ($pages > 1): ?>
+    <div class="pager" style="margin-top:12px;">
+      <?php for ($i = 1; $i <= $pages; $i++): ?>
+        <?php if ($i === $page): ?><b><?= $i ?></b><?php else: ?><a href="<?= e(url('/components', ['q' => $q, 'category' => $category, 'page' => $i])) ?>"><?= $i ?></a><?php endif; ?>
+      <?php endfor; ?>
+    </div>
+    <?php endif; ?>
     <?php else: ?>
     <div class="empty-state">No components found.</div>
     <?php endif; ?>

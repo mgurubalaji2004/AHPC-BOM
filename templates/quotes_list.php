@@ -14,6 +14,10 @@
         <a class="btn small secondary" href="<?= e(url("/quotes/$qid")) ?>">View</a>
         <a class="btn small secondary" href="<?= e(url("/quotes/$qid/edit")) ?>">Edit</a>
         <a class="btn small" href="<?= e(url("/quotes/$qid/docx")) ?>">Word</a>
+        <a class="btn small" href="<?= e(url("/quotes/$qid/pdf")) ?>">PDF</a>
+        <?php if (current_role() === 'Admin'): ?>
+        <form method="post" class="inline-form" action="<?= e(url("/quotes/$qid/delete")) ?>" onsubmit="return confirm('Delete quotation <?= e($qt['quote_number']) ?>?')"><button class="btn small danger" type="submit">Delete</button></form>
+        <?php endif; ?>
       </td>
     </tr>
     <?php endforeach; ?>

@@ -34,10 +34,7 @@
   </summary>
   <div style="margin-top:12px;">
     <?php include __DIR__ . '/_bom_lines.php'; ?>
-    <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
-      <a class="btn" href="<?= e(url('/boms/new', ['requirement_id' => $requirement['id'] ?? null, 'copy_from' => $b['id']])) ?>">Select &amp; use this BOM (copy all components)</a>
-      <a class="btn secondary" href="<?= e(url("/boms/{$b['id']}")) ?>">Open / edit original</a>
-    </div>
+    <?php $req_id = $requirement['id'] ?? null; include __DIR__ . '/_bom_actions.php'; ?>
   </div>
 </details>
 <?php endforeach; ?>

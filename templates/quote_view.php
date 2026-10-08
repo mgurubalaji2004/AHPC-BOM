@@ -18,6 +18,9 @@
     <a class="btn secondary" href="<?= e(url("/quotes/$qid/docx")) ?>">Download Word (.docx)</a>
     <a class="btn secondary" href="<?= e(url("/quotes/$qid/pdf")) ?>">Download PDF</a>
     <button class="btn secondary" onclick="window.print()">Print</button>
+    <?php if (current_role() === 'Admin'): ?>
+    <form method="post" class="inline-form" action="<?= e(url("/quotes/$qid/delete")) ?>" onsubmit="return confirm('Delete this quotation?')"><button class="btn danger" type="submit">Delete</button></form>
+    <?php endif; ?>
   </div>
 </div>
 

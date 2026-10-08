@@ -25,6 +25,9 @@ const ROUTES = [
     ['GET', '/team', 'page_team'],
     ['POST', '/team/{id}/reset_password', 'page_reset_password'],
     ['POST', '/team/test_mail', 'page_team_test_mail'],
+    ['POST', '/team/create', 'page_user_create'],
+    ['POST', '/team/{id}/edit', 'page_user_edit'],
+    ['POST', '/team/{id}/delete', 'page_user_delete'],
     ['POST', '/assign/{kind}/{id}', 'page_assign'],
     ['POST', '/remarks/{kind}/{id}', 'page_save_remarks'],
     ['GET', '/', 'page_dashboard'],
@@ -37,6 +40,8 @@ const ROUTES = [
     ['POST', '/components/rebuild', 'page_components_rebuild'],
     ['GET', '/boms', 'page_boms_list'],
     ['GET', '/boms/search', 'page_bom_search'],
+    ['POST', '/boms/upload', 'page_bom_upload'],
+    ['GET|POST', '/boms/{id}/customize', 'page_bom_customize'],
     ['GET|POST', '/boms/new', 'page_bom_new'],
     ['POST', '/boms/{id}/clone', 'page_bom_clone'],
     ['GET', '/boms/{id}', 'page_bom_detail'],
@@ -56,6 +61,13 @@ const ROUTES = [
     ['POST', '/quotes/{id}/status', 'page_quote_status'],
     ['GET', '/quotes/{id}/docx', 'page_quote_docx'],
     ['GET', '/quotes/{id}/pdf', 'page_quote_pdf'],
+    ['POST', '/quotes/{id}/delete', 'page_quote_delete'],
+    ['POST', '/boms/{id}/delete', 'page_bom_delete'],
+    ['POST', '/components/{id}/delete', 'page_component_delete'],
+    ['POST', '/components/delete_selected', 'page_components_delete_selected'],
+    ['POST', '/customers/{id}/delete', 'page_customer_delete'],
+    ['POST', '/customers/{id}/edit', 'page_customer_edit'],
+    ['POST', '/requirements/{id}/delete', 'page_requirement_delete'],
 ];
 
 function dispatch(string $method, string $path): void

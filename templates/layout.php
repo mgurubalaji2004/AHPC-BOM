@@ -18,7 +18,7 @@
       <a href="<?= e(url('/boms')) ?>">BOMs</a>
       <a href="<?= e(url('/quotes')) ?>">Quotes</a>
       <a href="<?= e(url('/customers')) ?>">Customers</a>
-      <?php if (current_role() === 'Admin'): ?><a href="<?= e(url('/team')) ?>">Team &amp; Emails</a><?php endif; ?>
+      <?php if (current_role() === 'Admin'): ?><a href="<?= e(url('/team')) ?>">Users &amp; Emails</a><?php endif; ?>
     </nav>
     <div class="user-info"><?= e(current_user_name()) ?> &middot; <?= e(current_role()) ?> &middot; <a href="<?= e(url('/account/password')) ?>">Password</a> &middot; <a href="<?= e(url('/logout')) ?>">Logout</a></div>
   </div>
