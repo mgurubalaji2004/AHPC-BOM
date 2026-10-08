@@ -23,7 +23,7 @@ and needs no Composer packages.
 3. Open `http://localhost/ahpc/` and sign in with a user name (or e-mail) from `TEAM` in `config.php`.
    Everyone can change their password under **Password**.
 
-On the first start (or when upgrading an older database) the app loads the **BOM library** from
+On the first start (or when upgrading an older database) the app imports the **Work Tracker** sheets and loads the **BOM library** from
 `data/bom_library/` (the uploaded Excel / Zoho sheets): every BOM table in those files becomes an
 "Uploaded BOM", the customers are taken from the files, and the component database is rebuilt from all
 BOM lines. The earlier demo customers / components and the old Excel-imported BOMs are removed
@@ -47,6 +47,14 @@ requirements. Engineers do the BOM and quotation work and add remarks / reasons 
 
 ### What is where
 
+* **Work Tracker** - the old "WorkTracker" sheet (main list, On Progress, COMPLETED) imported from
+  `data/work_tracker/`, with tabs (all / in progress / completed / cancelled), a card per engineer, filters,
+  search, add / edit / delete and **Export to Excel (CSV)**. Every requirement and every project BOM is added
+  automatically, one after another: each new BOM gets the **next quotation number** (continuing after the
+  highest number in the tracker), its **customer** and its **engineer**, and its row follows the BOM through
+  review, quotation and "quote sent". The quotation generated from a BOM uses the BOM's number.
+* **Themes** - pick a colour theme at the bottom of the sidebar (Allway, Indigo, Ocean, Forest, Rose, Dark);
+  it is remembered per user.
 * **Dashboard** - search box for customers, requirements, BOMs and quotations; pending work grouped by
   person (click a name to see only their work).
 * **BOMs** - *Uploaded BOMs* (the library) and *Project BOMs*. Each BOM has **Use this BOM** (copy all lines
@@ -106,6 +114,7 @@ depend on someone opening the app, schedule `cron/reminders.php`:
 | `lib/quote_pdf.php`, `lib/pdf.php` | Built-in PDF of the quotation (used when LibreOffice is missing) |
 | `lib/bom_import.php` | Reads BOM sheets (.xlsx / Zoho HTML) into BOMs |
 | `data/bom_library/` | The uploaded BOM sheets loaded on first start |
+| `lib/tracker.php`, `data/work_tracker/` | Work tracker logic, automatic quotation numbers, the imported tracker sheets |
 | `templates/` | HTML pages |
 | `static/` | CSS and logo |
 | `sql/schema.sql` | MySQL tables |

@@ -84,7 +84,7 @@
     <tr class="group-row"><td colspan="6"><?= e($g['name']) ?><?= $g['role'] ? ' &middot; ' . e($g['role']) : '' ?> &mdash; <?= count($g['items']) ?> pending<?= $g['overdue'] ? ', <span style="color:var(--danger);">' . $g['overdue'] . ' overdue</span>' : '' ?></td></tr>
     <?php foreach ($g['items'] as $p): ?>
     <tr>
-      <td data-label="Ref"><a href="<?= e($p['link']) ?>"><?= e($p['ref']) ?></a><div style="font-size:0.72rem;color:var(--muted);">since <?= e($p['since']) ?></div></td>
+      <td data-label="Ref"><a href="<?= e($p['link']) ?>"><?= e($p['ref']) ?></a><?php if (!empty($p['quote_no'])): ?><div style="font-size:0.74rem;font-weight:700;">Quote <?= e($p['quote_no']) ?></div><?php endif; ?><div style="font-size:0.72rem;color:var(--muted);">since <?= e($p['since']) ?></div></td>
       <td data-label="Customer"><?= e($p['company'] ?: '-') ?></td>
       <td data-label="Requirement / BOM"><?= e($p['title'] ?: '-') ?></td>
       <td data-label="Stage" style="font-size:0.85rem;"><?= e($p['stage']) ?></td>

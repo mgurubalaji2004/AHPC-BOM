@@ -10,10 +10,14 @@
   <div class="kpi"><div class="v">&#8377;<?= inr($kpis['avg_quote']) ?></div><div class="l">Average quote value</div></div>
   <div class="kpi"><div class="v"><?= e($kpis['conversion']) ?>%</div><div class="l">Requirements &rarr; quote sent</div></div>
   <div class="kpi"><div class="v"><?= e($kpis['customers']) ?></div><div class="l">Customers</div></div>
+  <div class="kpi"><div class="v"><?= e($kpis['tracker_open']) ?></div><div class="l">Tracker jobs in progress</div></div>
+  <div class="kpi"><div class="v"><?= e($kpis['tracker_done']) ?></div><div class="l">Tracker jobs completed</div></div>
 </div>
 
 <div class="charts">
-  <div class="chart-card wide"><h3>Activity per month</h3><div class="cbox"><canvas id="c-activity"></canvas></div></div>
+  <div class="chart-card wide"><h3>Work tracker: jobs received per month</h3><div class="cbox"><canvas id="c-tmonth"></canvas></div></div>
+  <div class="chart-card wide"><h3>Work tracker: jobs per engineer</h3><div class="cbox"><canvas id="c-teng"></canvas></div></div>
+  <div class="chart-card wide"><h3>Activity per month (app)</h3><div class="cbox"><canvas id="c-activity"></canvas></div></div>
   <div class="chart-card"><h3>Pipeline: requirement &rarr; quotation sent</h3><div class="cbox"><canvas id="c-funnel"></canvas></div></div>
   <div class="chart-card"><h3>Quoted value per month (&#8377;)</h3><div class="cbox"><canvas id="c-value"></canvas></div></div>
   <div class="chart-card"><h3>Pending work by person</h3><div class="cbox"><canvas id="c-person"></canvas></div></div>
@@ -32,7 +36,9 @@
 const D = <?= json_encode($data, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE) ?>;
 // categorical slots in fixed order; status colour only for "overdue"
 const S = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948'];
-const CRITICAL = '#d03b3b', INK = '#52514e', GRID = '#ececf2';
+const CRITICAL = '#d03b3b';
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+let INK = css('--muted'), GRID = css('--border'), SURF = css('--surface');
 
 function inr(n){ n=Math.round(n); var s=String(Math.abs(n)),t=s.slice(-3),h=s.slice(0,-3); if(h) t=h.replace(/\B(?=(\d{2})+(?!\d))/g,',')+','+t; return (n<0?'-':'')+t; }
 function short(n){ if(n>=1e7) return (n/1e7).toFixed(1).replace(/\.0$/,'')+' Cr'; if(n>=1e5) return (n/1e5).toFixed(1).replace(/\.0$/,'')+' L'; if(n>=1e3) return Math.round(n/1e3)+'k'; return String(n); }
@@ -42,6 +48,7 @@ function has(arr){ return arr.some(v => v > 0); }
 Chart.defaults.font.family = '"Segoe UI", system-ui, Arial, sans-serif';
 Chart.defaults.font.size = 12;
 Chart.defaults.color = INK;
+Chart.defaults.borderColor = GRID;
 Chart.defaults.maintainAspectRatio = false;
 Chart.defaults.plugins.legend.labels.boxWidth = 12;
 Chart.defaults.plugins.legend.labels.boxHeight = 12;
@@ -49,9 +56,9 @@ Chart.defaults.plugins.tooltip.padding = 10;
 Chart.defaults.interaction = { mode: 'index', intersect: false };
 
 function axes(money, horizontal, stacked) {
-  const val = { beginAtZero: true, stacked: !!stacked, grid: { color: GRID }, border: { display: false },
+  const val = { beginAtZero: true, stacked: !!stacked, grid: { color: () => GRID }, border: { display: false },
                 ticks: { precision: 0, callback: v => money ? short(v) : v } };
-  const cat = { stacked: !!stacked, grid: { display: false }, border: { color: '#cfd1dc' },
+  const cat = { stacked: !!stacked, grid: { display: false }, border: { color: () => GRID },
                 ticks: { autoSkip: false, callback: function(v){ const l = this.getLabelForValue(v); return l.length > 22 ? l.slice(0, 21) + '…' : l; } } };
   return horizontal ? { x: val, y: cat } : { x: cat, y: val };
 }
@@ -77,7 +84,7 @@ function bar(id, rows, opt) {
   new Chart(document.getElementById('c-activity'), {
     type: 'line',
     data: { labels: D.months, datasets: sets.map((s, i) => ({ label: s[0], data: s[1], borderColor: S[i], backgroundColor: S[i],
-            borderWidth: 2, pointRadius: 4, pointHoverRadius: 6, pointBorderColor: '#fff', pointBorderWidth: 2, tension: 0 })) },
+            borderWidth: 2, pointRadius: 4, pointHoverRadius: 6, pointBorderColor: SURF, pointBorderWidth: 2, tension: 0 })) },
     options: { scales: axes(false), plugins: { legend: { position: 'top', align: 'end' } } }
   });
 })();
@@ -92,7 +99,7 @@ bar('c-value', D.months.map((m, i) => [m, D.quote_value_m[i]]), { money: true })
   new Chart(document.getElementById('c-person'), {
     type: 'bar',
     data: { labels: rows.map(r => r[0]), datasets: [
-      { label: 'On time', data: rows.map(r => r[1]), backgroundColor: S[0], ...BAR, borderRadius: 0, borderWidth: { right: 2 }, borderColor: '#fff' },
+      { label: 'On time', data: rows.map(r => r[1]), backgroundColor: S[0], ...BAR, borderRadius: 0, borderWidth: { right: 2 }, borderColor: SURF },
       { label: '⚠ Overdue', data: rows.map(r => r[2]), backgroundColor: CRITICAL, ...BAR } ] },
     options: { indexAxis: 'y', scales: axes(false, true, true), plugins: { legend: { position: 'top', align: 'end' } } }
   });
@@ -106,7 +113,7 @@ bar('c-done', D.done_by, { horizontal: true });
   if (!rows.length) return noData('c-status');
   new Chart(document.getElementById('c-status'), {
     type: 'doughnut',
-    data: { labels: rows.map(r => r[0] + ' · ' + r[1]), datasets: [{ data: rows.map(r => r[1]), backgroundColor: S.slice(0, rows.length), borderColor: '#fff', borderWidth: 2 }] },
+    data: { labels: rows.map(r => r[0] + ' · ' + r[1]), datasets: [{ data: rows.map(r => r[1]), backgroundColor: S.slice(0, rows.length), borderColor: SURF, borderWidth: 2 }] },
     options: { cutout: '62%', interaction: { mode: 'nearest' }, plugins: { legend: { position: 'right' } } }
   });
 })();
@@ -121,7 +128,7 @@ bar('c-cust', D.by_customer, { horizontal: true, money: true });
   new Chart(document.getElementById('c-split'), {
     type: 'bar',
     data: { labels: rows.map(r => r[0]), datasets: names.map((n, i) => ({ label: n, data: rows.map(r => r[i + 1]), backgroundColor: S[i],
-            ...BAR, borderRadius: i === 2 ? 4 : 0, borderWidth: { top: 2 }, borderColor: '#fff' })) },
+            ...BAR, borderRadius: i === 2 ? 4 : 0, borderWidth: { top: 2 }, borderColor: SURF })) },
     options: { scales: axes(true, false, true), plugins: { legend: { position: 'top', align: 'end' }, tooltip: tip(true) } }
   });
 })();
@@ -129,4 +136,40 @@ bar('c-cust', D.by_customer, { horizontal: true, money: true });
 bar('c-cat', D.by_category, { horizontal: true, money: true });
 bar('c-lib', D.library_customers, { horizontal: true });
 bar('c-sales', D.by_sales, { horizontal: true });
+
+// work tracker
+(function(){
+  const rows = D.tracker_m;
+  if (!has(rows.flat())) return noData('c-tmonth');
+  const names = [['Completed', '#1baf7a'], ['In progress', S[0]], ['Cancelled', '#9a9a9a']];
+  new Chart(document.getElementById('c-tmonth'), {
+    type: 'bar',
+    data: { labels: D.months, datasets: names.map((n, i) => ({ label: n[0], data: rows.map(r => r[i]), backgroundColor: n[1], ...BAR,
+            borderRadius: 0, borderWidth: { top: 2 }, borderColor: SURF })) },
+    options: { scales: axes(false, false, true), plugins: { legend: { position: 'top', align: 'end' } } }
+  });
+})();
+(function(){
+  const rows = D.tracker_eng;
+  if (!rows.length) return noData('c-teng');
+  new Chart(document.getElementById('c-teng'), {
+    type: 'bar',
+    data: { labels: rows.map(r => r[0]), datasets: [
+      { label: 'In progress', data: rows.map(r => r[1]), backgroundColor: S[0], ...BAR, borderRadius: 0, borderWidth: { top: 2 }, borderColor: SURF },
+      { label: 'Completed', data: rows.map(r => r[2]), backgroundColor: '#1baf7a', ...BAR } ] },
+    options: { scales: axes(false, false, true), plugins: { legend: { position: 'top', align: 'end' } } }
+  });
+})();
+
+// re-colour axes / gaps when the theme changes
+document.addEventListener('themechange', function () {
+  INK = css('--muted'); GRID = css('--border'); SURF = css('--surface');
+  Chart.defaults.color = INK; Chart.defaults.borderColor = GRID;
+  Object.values(Chart.instances).forEach(function (ch) {
+    Object.values(ch.options.scales || {}).forEach(function (sc) { if (sc.grid) sc.grid.color = GRID; if (sc.ticks) sc.ticks.color = INK; });
+    ch.data.datasets.forEach(function (d) { if (d.borderColor && d.borderColor !== d.backgroundColor && typeof d.borderColor === 'string' && !S.includes(d.borderColor)) d.borderColor = SURF; });
+    if (ch.options.plugins && ch.options.plugins.legend) ch.options.plugins.legend.labels.color = INK;
+    ch.update('none');
+  });
+});
 </script>

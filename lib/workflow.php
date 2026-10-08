@@ -8,6 +8,7 @@ require_once __DIR__ . '/core.php';
 require_once __DIR__ . '/notify.php';
 require_once __DIR__ . '/quote_docx.php';
 require_once __DIR__ . '/quote_pdf.php';
+require_once __DIR__ . '/tracker.php';
 
 // ---------------------------------------------------------------------------
 // Users / assignment / remarks / notifications
@@ -141,6 +142,7 @@ function do_assign(string $kind, int $item_id, int $assignee_id, ?string $due_da
         $line .= ". Instruction: $note";
     }
     add_remark($kind, $item_id, $actor, 'ASSIGNMENT', $line);
+    track_assignment($kind, $item_id);
     $extra = [$assignee];
     $previous = ($old_id && (int)$old_id !== $assignee_id) ? user_by_id($old_id) : null;
     if ($previous) {
@@ -202,6 +204,7 @@ function pending_quotes(): array
                     AND " . LATEST_BOM . ' ORDER BY b.id DESC') as $b) {
         [$stage, $who] = PENDING_STAGE[$b['status']] ?? [$b['status'], 'Engineer'];
         $rows[] = ['kind' => 'bom', 'id' => (int)$b['id'], 'ref' => "{$b['bom_number']} v{$b['version']}", 'title' => $b['title'],
+                   'quote_no' => $b['quote_number'] ?? null,
                    'company' => $b['company'], 'stage' => $stage, 'pending_by' => $who, 'remarks' => $b['remarks'],
                    'since' => substr((string)$b['created_at'], 0, 10), 'link' => url("/boms/{$b['id']}")];
     }
@@ -435,16 +438,14 @@ function build_specs(array $items, ?array $existing = null): array
     return $specs;
 }
 
-function new_quote_number(): string
+/** Quotation number for a BOM: the number the BOM got when it was created, else the next free one. */
+function quote_number_for_bom(array $bom): string
 {
-    $year = date('Y');
-    $best = 1539;   // the supplied format starts at 20260001539
-    foreach (q('SELECT quote_number FROM quotations WHERE quote_number LIKE ?', ["$year%"])->fetchAll(PDO::FETCH_COLUMN) as $n) {
-        if (preg_match('/^\d{11}$/', (string)$n)) {
-            $best = max($best, (int)substr($n, 4));
-        }
+    $n = (string)($bom['quote_number'] ?? '');
+    if ($n !== '' && !val('SELECT 1 FROM quotations WHERE quote_number=?', [$n])) {
+        return $n;
     }
-    return $year . sprintf('%07d', $best + 1);
+    return with_quote_lock(fn() => next_quote_number());
 }
 
 function money_parts($total_price, $gst_percent): array

@@ -9,7 +9,7 @@ require_once __DIR__ . '/../config.php';
 date_default_timezone_set(APP_TIMEZONE);
 
 const BASE_DIR = __DIR__ . '/..';
-const SCHEMA_VERSION = '2';
+const SCHEMA_VERSION = '3';
 const ROLES = ['Engineer', 'Admin'];
 const KIND_TABLE = ['req' => 'requirements', 'bom' => 'boms', 'quote' => 'quotations'];
 const KIND_LABEL = ['req' => 'Requirement', 'bom' => 'BOM', 'quote' => 'Quotation'];
@@ -163,6 +163,16 @@ function migrate(PDO $pdo, int $from): void
         ensure_team($pdo);   // adds the new team members (existing logins are left as they are)
         // Version 2: customers and components come from the uploaded BOM library (data/bom_library)
         load_bom_library($pdo, true);
+    }
+    add_column($pdo, 'boms', 'quote_number', 'VARCHAR(40) NULL');
+    add_column($pdo, 'users', 'theme', 'VARCHAR(20) NULL');
+    if ($from < 3) {
+        // Version 3: work tracker (imported from data/work_tracker) + a quotation number on every project BOM
+        require_once __DIR__ . '/tracker.php';
+        if (!(int)$pdo->query('SELECT COUNT(*) FROM work_items')->fetchColumn() && is_dir(BASE_DIR . '/data/work_tracker')) {
+            import_work_tracker(BASE_DIR . '/data/work_tracker');
+        }
+        backfill_bom_tracking();
     }
 }
 
@@ -465,6 +475,22 @@ function roles_required(string ...$roles): void
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
+
+// key => [name, swatch colour 1, swatch colour 2]
+const THEMES = [
+    'allway' => ['Allway (navy & orange)', '#13233f', '#e2602a'],
+    'indigo' => ['Indigo (light)', '#ffffff', '#5b4ce6'],
+    'ocean' => ['Ocean', '#083344', '#22b3c9'],
+    'forest' => ['Forest', '#0f2a19', '#49b26a'],
+    'rose' => ['Rose', '#3a0d22', '#f05d93'],
+    'dark' => ['Dark', '#0e131c', '#f0763f'],
+];
+
+function current_theme(): string
+{
+    $t = me()['theme'] ?? ($_COOKIE['ahpc_theme'] ?? 'allway');
+    return isset(THEMES[$t]) ? $t : 'allway';
+}
 
 function e($v): string
 {

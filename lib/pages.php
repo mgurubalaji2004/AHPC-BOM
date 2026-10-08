@@ -39,6 +39,21 @@ function page_logout(): void
     redirect(url('/login'));
 }
 
+function page_theme(): void
+{
+    login_required();
+    $t = (string)form('theme', '');
+    if (isset(THEMES[$t])) {
+        q('UPDATE users SET theme=? WHERE id=?', [$t, $_SESSION['user_id']]);
+        setcookie('ahpc_theme', $t, ['expires' => time() + 365 * 86400, 'path' => '/', 'samesite' => 'Lax']);
+    }
+    if (($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') === 'fetch') {
+        http_response_code(204);
+        exit;
+    }
+    redirect(referer_path() ?? url('/'));
+}
+
 function page_change_password(): void
 {
     login_required();
@@ -350,6 +365,19 @@ function month_keys(int $n = 6): array
     return array_reverse($keys);
 }
 
+/** Tracker jobs received per month: [completed, in progress, cancelled] per month key. */
+function tracker_monthly(array $months): array
+{
+    $out = array_fill_keys($months, [0, 0, 0]);
+    foreach (all("SELECT DATE_FORMAT(COALESCE(received_date, entry_date), '%Y-%m') m, stage, COUNT(*) c FROM work_items
+                  WHERE COALESCE(received_date, entry_date) IS NOT NULL GROUP BY m, stage") as $r) {
+        if (isset($out[$r['m']])) {
+            $out[$r['m']][['DONE' => 0, 'OPEN' => 1, 'CANCELLED' => 2][$r['stage']] ?? 1] += (int)$r['c'];
+        }
+    }
+    return array_values($out);
+}
+
 function page_analytics(): void
 {
     login_required();
@@ -422,6 +450,10 @@ function page_analytics(): void
         'by_person' => array_map(fn($k, $v) => [$k, $v[0], $v[1]], array_keys($by_person), array_values($by_person)),
         'done_by' => $done_by, 'library_customers' => $library_customers,
         'by_sales' => array_map(fn($r) => [$r['sp'], (int)$r['c']], $sales_rows),
+        'tracker_m' => tracker_monthly($months),
+        'tracker_eng' => array_map(fn($r) => [$r['n'], (int)$r['o'], (int)$r['d']],
+            all("SELECT COALESCE(NULLIF(engineer_name,''),'Unassigned') n, SUM(stage='OPEN') o, SUM(stage='DONE') d FROM work_items
+                 GROUP BY n ORDER BY (SUM(stage='OPEN') + SUM(stage='DONE')) DESC LIMIT 12")),
     ];
     $kpis = [
         'requirements' => $n_req, 'boms' => $n_bom, 'quotes' => $n_quote, 'pending' => count($pending),
@@ -430,6 +462,8 @@ function page_analytics(): void
         'customers' => (int)val('SELECT COUNT(*) FROM customers'),
         'library' => (int)val("SELECT COUNT(*) FROM boms WHERE source='UPLOAD'"),
         'overdue' => count(array_filter($pending, fn($p) => $p['overdue'])),
+        'tracker_open' => (int)val("SELECT COUNT(*) FROM work_items WHERE stage='OPEN'"),
+        'tracker_done' => (int)val("SELECT COUNT(*) FROM work_items WHERE stage='DONE'"),
         'conversion' => $n_req ? (int)pyround(100.0 * $n_sent / $n_req) : 0,
     ];
     render('analytics', ['data' => $data, 'kpis' => $kpis], 'Analytics - AHPC BOM System');
@@ -481,6 +515,7 @@ function page_requirement_new(): void
              VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)",
             [$req_number, $customer_id, form('sales_person') ?? current_user_name(), date_or_null(form('req_date')) ?? today_str(),
              date_or_null(form('expected_delivery')), form('title'), form('description'), now_str()]);
+        track_requirement_created($new_id);
         $me = me();
         $assignee_id = int_or_null(form('assignee_id'));
         if ($me['role'] === 'Admin' && $assignee_id && user_by_id($assignee_id)) {
@@ -587,9 +622,9 @@ function page_boms_list(): void
             array_push($params, ...array_fill(0, 8, "%$w%"));
         }
     }
-    $from = "FROM boms b LEFT JOIN customers c ON c.id = b.customer_id WHERE $where";
+    $from = "FROM boms b LEFT JOIN customers c ON c.id = b.customer_id LEFT JOIN users u ON u.id = b.assigned_to WHERE $where";
     $total = (int)val("SELECT COUNT(*) $from", $params);
-    $rows = all("SELECT b.*, c.company $from ORDER BY " . ($tab === 'library' ? 'c.company IS NULL, c.company, b.title, b.id' : 'b.id DESC')
+    $rows = all("SELECT b.*, c.company, COALESCE(u.name, b.created_by) AS engineer $from ORDER BY " . ($tab === 'library' ? 'c.company IS NULL, c.company, b.title, b.id' : 'b.id DESC')
                 . ' LIMIT ' . $per_page . ' OFFSET ' . (($page - 1) * $per_page), $params);
     $counts = [
         'library' => (int)val("SELECT COUNT(*) FROM boms WHERE source = 'UPLOAD'"),
@@ -712,8 +747,9 @@ function page_bom_new(): void
         if ($src) {
             copy_items($src, $new_bom_id);
         }
+        track_bom_created($new_bom_id);
         notify_event('bom', $new_bom_id, 'BOM_NEW', 'BOM created', "{$me['name']} started a new BOM ($bom_number).", $me);
-        flash("BOM $bom_number created. You can add and edit components below.");
+        flash("BOM $bom_number created with quotation no. " . val('SELECT quote_number FROM boms WHERE id=?', [$new_bom_id]) . '. You can add and edit components below.');
         redirect(url("/boms/$new_bom_id"));
     }
 
@@ -777,9 +813,10 @@ function page_bom_customize(int $bom_id): void
                VALUES (?, ?, ?, ?, ?, ?, ?)', array_merge([$new_id], $l));
         }
         add_remark('bom', $new_id, $me, 'SYSTEM', "Customized from {$bom['bom_number']} ({$bom['title']})");
+        track_bom_created($new_id);
         notify_event('bom', $new_id, 'BOM_NEW', 'BOM created (customized)',
                      "{$me['name']} created $bom_number by customizing {$bom['bom_number']}.", $me);
-        flash("BOM $bom_number created from {$bom['bom_number']}.");
+        flash("BOM $bom_number created from {$bom['bom_number']} with quotation no. " . val('SELECT quote_number FROM boms WHERE id=?', [$new_id]) . '.');
         redirect(url("/boms/$new_id"));
     }
     $requirement_id = int_or_null(arg('requirement_id'));
@@ -803,6 +840,7 @@ function page_bom_clone(int $bom_id): void
         [$bom_number, $bom['requirement_id'], $bom['customer_id'], ($bom['title'] ?? '') . ' (copy)', $bom['pricing_mode'],
          $bom['margin_percent'], $bom['gst_percent'], current_user_name(), now_str(), $owner, $due]);
     copy_items($bom_id, $new_id);
+    track_bom_created($new_id);
     notify_event('bom', $new_id, 'BOM_NEW', 'BOM created (copy)',
                  "{$me['name']} created $bom_number as a copy of {$bom['bom_number']}.", $me);
     flash("New BOM $bom_number created from {$bom['bom_number']}. Modify components as needed.");
@@ -847,6 +885,7 @@ function page_bom_meta(int $bom_id): void
     load_bom($bom_id);
     $customer_id = resolve_customer();
     q('UPDATE boms SET title=?, customer_id=COALESCE(?, customer_id) WHERE id=?', [form('title'), $customer_id, $bom_id]);
+    track_bom_refresh($bom_id);
     bom_changed($bom_id);
 }
 
@@ -909,6 +948,7 @@ function page_bom_submit_review(int $bom_id): void
     login_required();
     load_bom($bom_id);
     q("UPDATE boms SET status='UNDER_REVIEW' WHERE id=?", [$bom_id]);
+    track_bom($bom_id, ['status' => 'BOM under review', 'stage' => 'OPEN']);
     $me = me();
     add_remark('bom', $bom_id, $me, 'SYSTEM', 'Submitted for internal review');
     notify_event('bom', $bom_id, 'BOM_SUBMIT', 'BOM submitted for review',
@@ -923,6 +963,7 @@ function page_bom_reopen(int $bom_id): void
     login_required();
     load_bom($bom_id);
     q("UPDATE boms SET status='DRAFT' WHERE id=?", [$bom_id]);
+    track_bom($bom_id, ['status' => 'BOM being revised', 'stage' => 'OPEN']);
     $me = me();
     add_remark('bom', $bom_id, $me, 'SYSTEM', 'Moved back to Draft');
     notify_event('bom', $bom_id, 'BOM_REOPEN', 'BOM moved back to Draft',
@@ -939,6 +980,7 @@ function page_bom_review_decision(int $bom_id): void
     $me = me();
     if (form('decision') === 'approve') {
         q("UPDATE boms SET status='APPROVED', review_comment=? WHERE id=?", [$comment, $bom_id]);
+        track_bom($bom_id, ['status' => 'BOM approved - quotation to be generated', 'stage' => 'OPEN']);
         add_remark('bom', $bom_id, $me, 'REMARK', 'APPROVED' . ($comment !== '' ? ": $comment" : ''));
         notify_event('bom', $bom_id, 'BOM_APPROVED', 'BOM approved',
                      "{$me['name']} approved this BOM. A quotation can now be generated."
@@ -956,6 +998,8 @@ function page_bom_review_decision(int $bom_id): void
          $bom['pricing_mode'], $bom['margin_percent'], $bom['gst_percent'], current_user_name(), now_str(), $comment,
          $bom['assigned_to'], $bom['due_date'], $bom['assigned_by'], $bom['assigned_at']]);
     copy_items($bom_id, $new_id);
+    track_bom_created($new_id, $bom_id);   // same quotation number and tracker row
+    track_bom($new_id, ['status' => 'Revision required (v' . ($bom['version'] + 1) . ')' . ($comment !== '' ? ": $comment" : ''), 'stage' => 'OPEN']);
     add_remark('bom', $bom_id, $me, 'REMARK', 'REVISION REQUIRED' . ($comment !== '' ? ": $comment" : ''));
     add_remark('bom', $new_id, $me, 'REMARK', 'Revision requested' . ($comment !== '' ? ": $comment" : ''));
     notify_event('bom', $new_id, 'BOM_REVISION', 'Revision required',
@@ -979,7 +1023,7 @@ function page_generate_quote(int $bom_id): void
         redirect(url("/boms/$bom_id"));
     }
     $totals = compute_bom_totals($bom, bom_items($bom_id));
-    $quote_number = new_quote_number();
+    $quote_number = quote_number_for_bom($bom);
     $qid = insert(
         "INSERT INTO quotations (quote_number, bom_id, customer_id, subtotal, margin_amount, gst_amount,
                                  grand_total, terms, status, created_at, assigned_to, due_date)
@@ -987,6 +1031,10 @@ function page_generate_quote(int $bom_id): void
         [$quote_number, $bom_id, $bom['customer_id'], $totals['subtotal'], $totals['margin_amount'],
          $totals['gst_amount'], $totals['grand_total'], now_str(), $bom['assigned_to'], $bom['due_date']]);
     q("UPDATE boms SET status='QUOTED' WHERE id=?", [$bom_id]);
+    if (!$bom['quote_number']) {
+        q('UPDATE boms SET quote_number=? WHERE id=?', [$quote_number, $bom_id]);
+    }
+    track_bom($bom_id, ['status' => 'Quotation generated', 'stage' => 'OPEN', 'quote_id' => $qid]);
     hydrate_quote($qid);
     $me = me();
     notify_event('quote', $qid, 'QUOTE_NEW', 'Quotation generated',
@@ -1086,6 +1134,9 @@ function page_quote_status(int $quote_id): void
     load_quote($quote_id);
     $sent = form('status') === 'SENT';
     q('UPDATE quotations SET status=? WHERE id=?', [$sent ? 'SENT' : 'DRAFT', $quote_id]);
+    $bid = (int)val('SELECT bom_id FROM quotations WHERE id=?', [$quote_id]);
+    track_bom($bid, $sent ? ['status' => 'Quote sent', 'stage' => 'DONE', 'quote_sent_date' => today_str(), 'quote_id' => $quote_id]
+                          : ['status' => 'Quotation generated', 'stage' => 'OPEN', 'quote_sent_date' => null]);
     $me = me();
     add_remark('quote', $quote_id, $me, 'SYSTEM', $sent ? 'Marked as sent to customer' : 'Moved back to draft');
     notify_event('quote', $quote_id, 'QUOTE_STATUS', $sent ? 'Quotation sent to customer' : 'Quotation moved back to draft',
@@ -1134,6 +1185,7 @@ function delete_quote_rows(array $quote_ids): void
         }
         q('DELETE FROM orders WHERE quote_id=?', [$qid]);
         q("DELETE FROM remarks WHERE kind='quote' AND item_id=?", [$qid]);
+        q('UPDATE work_items SET quote_id=NULL WHERE quote_id=?', [$qid]);
         q('DELETE FROM quotations WHERE id=?', [$qid]);
     }
 }
@@ -1148,6 +1200,7 @@ function page_bom_delete(int $bom_id): void
     q('DELETE FROM bom_items WHERE bom_id=?', [$bom_id]);
     q("DELETE FROM remarks WHERE kind='bom' AND item_id=?", [$bom_id]);
     q('UPDATE boms SET parent_bom_id=NULL WHERE parent_bom_id=?', [$bom_id]);
+    q('UPDATE work_items SET bom_id=NULL, quote_id=NULL WHERE bom_id=?', [$bom_id]);
     q('DELETE FROM boms WHERE id=?', [$bom_id]);
     $pdo->commit();
     flash("BOM {$bom['bom_number']} ({$bom['title']}) deleted.");
@@ -1163,6 +1216,7 @@ function page_quote_delete(int $quote_id): void
     // the BOM can be quoted again
     if ($qt['bom_id'] && !val('SELECT 1 FROM quotations WHERE bom_id=?', [$qt['bom_id']])) {
         q("UPDATE boms SET status='APPROVED' WHERE id=? AND status='QUOTED'", [$qt['bom_id']]);
+        track_bom((int)$qt['bom_id'], ['status' => 'Quotation deleted - BOM approved', 'stage' => 'OPEN', 'quote_id' => null]);
     }
     flash("Quotation {$qt['quote_number']} deleted.");
     redirect(url('/quotes'));
@@ -1220,8 +1274,189 @@ function page_requirement_delete(int $id): void
     roles_required('Admin');
     $r = one('SELECT * FROM requirements WHERE id=?', [$id]) ?? abort(404);
     q('UPDATE boms SET requirement_id=NULL WHERE requirement_id=?', [$id]);
+    q('DELETE FROM work_items WHERE requirement_id=? AND bom_id IS NULL AND quote_id IS NULL', [$id]);
+    q('UPDATE work_items SET requirement_id=NULL WHERE requirement_id=?', [$id]);
     q("DELETE FROM remarks WHERE kind='req' AND item_id=?", [$id]);
     q('DELETE FROM requirements WHERE id=?', [$id]);
     flash("Requirement {$r['req_number']} deleted (its BOMs are kept).");
     redirect(url('/requirements'));
+}
+
+// ---------------------------------------------------------------------------
+// Work tracker
+// ---------------------------------------------------------------------------
+
+const WORK_FIELDS = ['entry_date', 'received_date', 'quote_number', 'customer_name', 'company_name', 'region', 'requirement',
+                     'quantity', 'quote_sent_date', 'po_status', 'start_date', 'due_date', 'status', 'remarks', 'followup', 'contact'];
+const WORK_DATES = ['entry_date', 'received_date', 'quote_sent_date', 'start_date', 'due_date'];
+
+/** WHERE clause + params for the tracker filters. */
+function tracker_filter(): array
+{
+    $tab = arg('tab', 'all');
+    $where = ['1=1'];
+    $p = [];
+    if (isset(STAGES[strtoupper($tab)])) {
+        $where[] = 'w.stage = ?';
+        $p[] = strtoupper($tab);
+    }
+    if (($eng = arg('engineer')) !== null) {
+        if ($eng === 'none') {
+            $where[] = "COALESCE(w.engineer_name, '') = ''";
+        } else {
+            $where[] = 'w.engineer_name = ?';
+            $p[] = $eng;
+        }
+    }
+    if (($from = date_or_null(arg('from'))) !== null) {
+        $where[] = 'COALESCE(w.received_date, w.entry_date) >= ?';
+        $p[] = $from;
+    }
+    if (($to = date_or_null(arg('to'))) !== null) {
+        $where[] = 'COALESCE(w.received_date, w.entry_date) <= ?';
+        $p[] = $to;
+    }
+    foreach (preg_split('/\s+/u', trim((string)arg('q', ''))) as $w) {
+        if ($w === '') {
+            continue;
+        }
+        $where[] = '(w.quote_number LIKE ? OR w.customer_name LIKE ? OR w.company_name LIKE ? OR w.requirement LIKE ? OR w.status LIKE ?
+                     OR w.remarks LIKE ? OR w.engineer_name LIKE ? OR w.region LIKE ? OR w.contact LIKE ? OR w.followup LIKE ?)';
+        array_push($p, ...array_fill(0, 10, "%$w%"));
+    }
+    return [implode(' AND ', $where), $p, $tab];
+}
+
+function page_tracker(): void
+{
+    login_required();
+    [$where, $p, $tab] = tracker_filter();
+    $page = max(1, (int)arg('page', 1));
+    $per = 50;
+    $total = (int)val("SELECT COUNT(*) FROM work_items w WHERE $where", $p);
+    $rows = all("SELECT w.*, b.bom_number, b.version AS bom_version, q.quote_number AS quote_ref FROM work_items w
+                 LEFT JOIN boms b ON b.id = w.bom_id LEFT JOIN quotations q ON q.id = w.quote_id
+                 WHERE $where ORDER BY (COALESCE(w.received_date, w.entry_date) IS NULL), COALESCE(w.received_date, w.entry_date) DESC,
+                 w.sno DESC, w.id DESC
+                 LIMIT $per OFFSET " . (($page - 1) * $per), $p);
+    $stage_counts = array_fill_keys(array_keys(STAGES), 0);
+    foreach (all('SELECT stage, COUNT(*) n FROM work_items GROUP BY stage') as $r) {
+        $stage_counts[$r['stage']] = (int)$r['n'];
+    }
+    $by_engineer = all("SELECT COALESCE(NULLIF(engineer_name,''), '(none)') name, SUM(stage='OPEN') open, SUM(stage='DONE') done, COUNT(*) n
+                        FROM work_items GROUP BY name ORDER BY open DESC, n DESC");
+    render('tracker', ['rows' => $rows, 'total' => $total, 'page' => $page, 'pages' => max(1, (int)ceil($total / $per)), 'tab' => $tab,
+                       'stage_counts' => $stage_counts, 'by_engineer' => $by_engineer, 'users' => team_users(),
+                       'engineers' => q("SELECT DISTINCT engineer_name FROM work_items WHERE COALESCE(engineer_name,'') <> '' ORDER BY engineer_name")->fetchAll(PDO::FETCH_COLUMN),
+                       'next_quote' => next_quote_number()], 'Work Tracker');
+}
+
+/** Values of the tracker form (new or edit). */
+function work_form_values(): array
+{
+    $row = [];
+    foreach (WORK_FIELDS as $f) {
+        $v = trim((string)form($f, ''));
+        $row[$f] = in_array($f, WORK_DATES, true) ? date_or_null($v) : ($v === '' ? null : $v);
+    }
+    $stage = form('stage', 'OPEN');
+    $row['stage'] = isset(STAGES[$stage]) ? $stage : stage_from_status((string)$row['status']);
+    $uid = int_or_null(form('engineer_id'));
+    if ($uid && ($u = user_by_id($uid))) {
+        [$row['engineer_id'], $row['engineer_name']] = [(int)$u['id'], $u['name']];
+    } else {
+        $other = trim((string)form('engineer_other', ''));
+        [$row['engineer_id'], $row['engineer_name']] = $other !== '' ? match_engineer($other) : [null, null];
+    }
+    return $row;
+}
+
+function page_tracker_new(): void
+{
+    login_required();
+    $row = work_form_values();
+    if (!$row['customer_name']) {
+        flash('Customer name is required.', 'error');
+        redirect(url('/tracker'));
+    }
+    $id = with_quote_lock(function () use ($row) {
+        if (form('auto_number') === '1' && !$row['quote_number']) {
+            $row['quote_number'] = next_quote_number();
+        }
+        $row['entry_date'] ??= today_str();
+        $row['received_date'] ??= today_str();
+        return work_insert($row + ['sno' => next_sno(), 'source' => 'MANUAL', 'created_by' => current_user_name()]);
+    });
+    $w = one('SELECT * FROM work_items WHERE id=?', [$id]);
+    flash("Added to the tracker: S.No. {$w['sno']}" . ($w['quote_number'] ? ", quotation no. {$w['quote_number']}" : '') . " - {$w['customer_name']}.");
+    redirect(url('/tracker'));
+}
+
+function page_tracker_edit(int $id): void
+{
+    login_required();
+    $w = one('SELECT * FROM work_items WHERE id=?', [$id]) ?? abort(404);
+    if (is_post()) {
+        $row = work_form_values();
+        if (!$row['customer_name']) {
+            flash('Customer name is required.', 'error');
+            redirect(url("/tracker/$id/edit"));
+        }
+        if ($row['stage'] === 'DONE' && !$row['quote_sent_date'] && stripos((string)$row['status'], 'sent') !== false) {
+            $row['quote_sent_date'] = today_str();
+        }
+        work_update($id, $row);
+        flash("Tracker row {$w['sno']} saved.");
+        redirect(safe_next(form('next')) ?? url('/tracker'));
+    }
+    render('tracker_edit', ['w' => $w, 'users' => team_users(),
+                            'bom' => $w['bom_id'] ? one('SELECT id, bom_number, version FROM boms WHERE id=?', [$w['bom_id']]) : null,
+                            'back' => referer_path()], 'Edit tracker row');
+}
+
+function page_tracker_delete(int $id): void
+{
+    roles_required('Admin');
+    $w = one('SELECT * FROM work_items WHERE id=?', [$id]) ?? abort(404);
+    q('DELETE FROM work_items WHERE id=?', [$id]);
+    flash("Tracker row {$w['sno']} ({$w['customer_name']}) deleted.");
+    redirect(referer_path() ?? url('/tracker'));
+}
+
+/** Quick status change from the list. */
+function page_tracker_stage(int $id): void
+{
+    login_required();
+    $w = one('SELECT * FROM work_items WHERE id=?', [$id]) ?? abort(404);
+    $stage = form('stage');
+    if (isset(STAGES[$stage])) {
+        $upd = ['stage' => $stage];
+        if ($stage === 'DONE' && !$w['quote_sent_date']) {
+            $upd['quote_sent_date'] = today_str();
+            $upd['status'] = $w['status'] ?: 'Quote sent';
+        }
+        work_update($id, $upd);
+        flash("S.No. {$w['sno']} marked " . STAGES[$stage] . '.');
+    }
+    redirect(referer_path() ?? url('/tracker'));
+}
+
+function page_tracker_export(): void
+{
+    login_required();
+    [$where, $p] = tracker_filter();
+    $rows = all("SELECT * FROM work_items w WHERE $where ORDER BY COALESCE(w.received_date, w.entry_date) DESC, w.id DESC", $p);
+    $head = ['S.No.', 'Date', 'Received Date', 'Quotation number', 'Customer Name', 'Company Name', 'Region', 'Requirements', 'Quantity',
+             'Quote Sent Date', 'Assigned Engineer', 'PO status', 'Start Date', 'Due Date', 'Status', 'Stage', 'Remarks', 'Followup', 'Contact'];
+    $out = fopen('php://temp', 'w+');
+    fwrite($out, "\xEF\xBB\xBF");   // Excel reads the file as UTF-8
+    fputcsv($out, $head);
+    foreach ($rows as $r) {
+        fputcsv($out, [$r['sno'], $r['entry_date'], $r['received_date'], $r['quote_number'], $r['customer_name'], $r['company_name'],
+                       $r['region'], $r['requirement'], $r['quantity'], $r['quote_sent_date'], $r['engineer_name'], $r['po_status'],
+                       $r['start_date'], $r['due_date'], $r['status'], STAGES[$r['stage']] ?? $r['stage'], $r['remarks'], $r['followup'],
+                       $r['contact']]);
+    }
+    rewind($out);
+    send_download(stream_get_contents($out), 'WorkTracker_' . date('Y-m-d') . '.csv', 'text/csv; charset=utf-8');
 }

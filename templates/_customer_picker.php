@@ -9,7 +9,7 @@
     <option value="__new__">+ Add new customer...</option>
   </select>
 </div>
-<div id="new-customer" class="card" style="display:none;background:#f8f7ff;border:1px dashed var(--purple);">
+<div id="new-customer" class="card soft-panel" style="display:none;">
   <div class="section-title" style="margin-top:0;">New Customer</div>
   <div class="grid-2">
     <div class="field"><label>Company Name *</label><input name="new_company" id="new_company"></div>

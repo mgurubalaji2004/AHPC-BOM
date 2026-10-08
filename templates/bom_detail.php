@@ -18,8 +18,17 @@ $is_lib = ($bom['source'] ?? '') === 'UPLOAD';
   </div>
 </div>
 
+<?php if (!$is_lib): $eng = user_by_id($bom['assigned_to']); $cust = $customers ? array_values(array_filter($customers, fn($c) => $c['id'] == $bom['customer_id'])) : []; ?>
+<div class="bom-meta-strip">
+  <div class="pill"><small>Quotation no.</small><b><?= e($bom['quote_number'] ?: '-') ?></b></div>
+  <div class="pill"><small>Customer</small><b><?= e($cust[0]['company'] ?? '-') ?></b></div>
+  <div class="pill"><small>Engineer</small><b><?= e($eng['name'] ?? ($bom['created_by'] ?: 'Not assigned')) ?></b></div>
+  <div class="pill"><small>Status</small><b><?= e(ucwords(strtolower(str_replace('_', ' ', $bom['status'])))) ?></b></div>
+  <div class="pill"><small>Created</small><b><?= e(substr((string)$bom['created_at'], 0, 10)) ?></b></div>
+</div>
+<?php endif; ?>
 <?php if ($is_lib): ?>
-<div class="card" style="background:#f8f7ff;border:1px dashed var(--purple);">
+<div class="card soft-panel">
   <b>Uploaded BOM</b><?= $bom['source_file'] ? ' from <code>' . e($bom['source_file']) . '</code>' : '' ?>. Use it as the start of a customer BOM:
   <?php $b = $bom; include __DIR__ . '/_bom_actions.php'; ?>
 </div>
@@ -62,7 +71,7 @@ $is_lib = ($bom['source'] ?? '') === 'UPLOAD';
   }
   </script>
   <?php if ($bom['review_comment']): ?>
-  <div style="margin-top:10px;padding:10px;background:#fff1d6;border-radius:8px;font-size:0.88rem;">
+  <div class="note warn">
     <b>Review comment:</b> <?= e($bom['review_comment']) ?>
   </div>
   <?php endif; ?>
@@ -75,7 +84,7 @@ $is_lib = ($bom['source'] ?? '') === 'UPLOAD';
   </div>
   <?php endif; ?>
   <?php if (!$is_lib && in_array($bom['status'], ['UNDER_REVIEW', 'APPROVED', 'QUOTED'], true)): ?>
-  <div style="margin-top:10px;padding:10px;background:#eef2ff;border-radius:8px;font-size:0.85rem;">
+  <div class="note info">
     This BOM is <b><?= e(str_replace('_', ' ', $bom['status'])) ?></b> but can still be edited. Changes are saved straight away.
     <?php if ($bom['status'] !== 'QUOTED'): ?>
     <form method="post" action="<?= e(url("/boms/$bid/reopen")) ?>" style="display:inline;"><button class="btn small secondary" type="submit">Move back to Draft for re-review</button></form>

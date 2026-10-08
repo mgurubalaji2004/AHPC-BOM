@@ -181,3 +181,40 @@ CREATE TABLE IF NOT EXISTS procurement (
     CONSTRAINT fk_proc_order FOREIGN KEY (order_id) REFERENCES orders(id),
     CONSTRAINT fk_proc_component FOREIGN KEY (component_id) REFERENCES components(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Work tracker (one row per job: requirement / BOM / quotation), imported from the "WorkTracker" sheet
+-- and kept up to date automatically for every project BOM.
+CREATE TABLE IF NOT EXISTS work_items (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    sno INT,
+    entry_date DATE NULL,
+    received_date DATE NULL,
+    quote_number VARCHAR(40),
+    customer_name VARCHAR(255),
+    company_name VARCHAR(255),
+    region VARCHAR(60),
+    requirement TEXT,
+    quantity VARCHAR(40),
+    quote_sent_date DATE NULL,
+    engineer_id INT NULL,
+    engineer_name VARCHAR(120),
+    po_status VARCHAR(120),
+    start_date DATE NULL,
+    due_date DATE NULL,
+    status VARCHAR(255),
+    stage VARCHAR(20) DEFAULT 'OPEN',      -- OPEN / DONE / CANCELLED
+    remarks TEXT,
+    followup VARCHAR(255),
+    contact VARCHAR(255),
+    requirement_id INT NULL,
+    bom_id INT NULL,
+    quote_id INT NULL,
+    source VARCHAR(20) DEFAULT 'MANUAL',   -- IMPORT / AUTO / MANUAL
+    created_by VARCHAR(120),
+    created_at DATETIME,
+    updated_at DATETIME,
+    KEY idx_work_quote (quote_number),
+    KEY idx_work_stage (stage),
+    KEY idx_work_bom (bom_id),
+    KEY idx_work_req (requirement_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

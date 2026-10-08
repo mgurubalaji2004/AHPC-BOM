@@ -35,8 +35,8 @@
 <?php $words = []; foreach ($boms as $b): [$items, $t] = $detail[$b['id']]; ?>
 <details class="card bom-card">
   <summary>
-    <span class="bom-no"><?= e($b['bom_number']) ?> <small>v<?= e($b['version']) ?></small></span>
-    <span class="bom-title"><?= e($b['title']) ?><?php if ($b['source_file']): ?><small class="src">&#128196; <?= e($b['source_file']) ?></small><?php endif; ?></span>
+    <span class="bom-no"><?= e($b['bom_number']) ?> <small>v<?= e($b['version']) ?></small><?php if ($b['quote_number']): ?><span class="qn">Quote <?= e($b['quote_number']) ?></span><?php endif; ?></span>
+    <span class="bom-title"><?= e($b['title']) ?><?php if ($b['source_file']): ?><small class="src">&#128196; <?= e($b['source_file']) ?></small><?php elseif ($b['engineer']): ?><small class="who">Engineer: <?= e($b['engineer']) ?></small><?php endif; ?></span>
     <span class="bom-cust"><?= e($b['company'] ?: '-') ?></span>
     <?php if ($tab === 'library'): ?><span class="badge gray"><?= count($items) ?> lines</span>
     <?php else: ?><span class="badge <?= badge_status_class((string)$b['status']) ?>"><?= e(str_replace('_', ' ', (string)$b['status'])) ?></span><?php endif; ?>
