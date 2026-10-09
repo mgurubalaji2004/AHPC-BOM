@@ -1,6 +1,6 @@
 DirectoryIndex index.php
 Options -Indexes
 
-<FilesMatch "^(config\.php|README\.md)$">
+<FilesMatch "^(config(\.local|\.local\.example)?\.php|README\.md)$">
     Require all denied
 </FilesMatch>

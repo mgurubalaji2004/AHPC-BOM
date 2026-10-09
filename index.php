@@ -112,7 +112,26 @@ try {
 } catch (PDOException $e) {
     error_log('[db] ' . $e->getMessage());
     http_response_code(500);
-    echo '<!DOCTYPE html><title>Database error</title><h1>Database error</h1>'
-       . '<p>Could not talk to MySQL. Check the database settings in <code>config.php</code> and that MySQL is running.</p>'
-       . '<pre style="white-space:pre-wrap;color:#a00;">' . e($e->getMessage()) . '</pre>';
+    $code = (int)($e->errorInfo[1] ?? $e->getCode());
+    $help = match ($code) {
+        1045 => '<p><b>MySQL refused the login</b> <code>' . e(DB_USER) . '</code>' . (DB_PASS === '' ? ' with an <b>empty password</b>' : '')
+              . '. Put the right MySQL user name and password in <code>config.local.php</code> (copy <code>config.local.example.php</code>)'
+              . ' or in <code>config.php</code> (DB_USER / DB_PASS), save, and reload this page.</p>'
+              . '<p>No user for the app yet? In phpMyAdmin &rarr; SQL (or the mysql command line, logged in as root) run:</p>'
+              . '<pre>CREATE DATABASE ahpc_bom CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;' . "\n"
+              . "CREATE USER 'ahpc'@'localhost' IDENTIFIED BY 'choose-a-password';\n"
+              . "CREATE USER 'ahpc'@'127.0.0.1' IDENTIFIED BY 'choose-a-password';\n"
+              . "GRANT ALL PRIVILEGES ON ahpc_bom.* TO 'ahpc'@'localhost';\n"
+              . "GRANT ALL PRIVILEGES ON ahpc_bom.* TO 'ahpc'@'127.0.0.1';\nFLUSH PRIVILEGES;</pre>"
+              . '<p>and then use <code>ahpc</code> / <code>choose-a-password</code> as DB_USER / DB_PASS.</p>',
+        2002, 2003, 2006 => '<p><b>MySQL is not reachable</b> at <code>' . e(DB_HOST) . ':' . e(DB_PORT) . '</code>. Start MySQL'
+              . ' (XAMPP Control Panel &rarr; MySQL &rarr; Start) or correct DB_HOST / DB_PORT.</p>',
+        1044, 1142 => '<p><b>The MySQL user may not use the database</b> <code>' . e(DB_NAME) . '</code>. Create the database and'
+              . ' GRANT ALL PRIVILEGES ON ' . e(DB_NAME) . '.* to the user (see README), then reload.</p>',
+        default => '<p>Could not talk to MySQL. Check the database settings (DB_HOST, DB_USER, DB_PASS, DB_NAME) and that MySQL is running.</p>',
+    };
+    echo '<!DOCTYPE html><meta charset="utf-8"><title>Database error</title>'
+       . '<body style="font-family:Segoe UI,Arial,sans-serif;max-width:760px;margin:40px auto;padding:0 16px;color:#1c2433;line-height:1.5;">'
+       . '<h1>Database error</h1>' . $help
+       . '<pre style="white-space:pre-wrap;background:#fde8e8;color:#a00;padding:10px;border-radius:8px;">' . e($e->getMessage()) . '</pre></body>';
 }

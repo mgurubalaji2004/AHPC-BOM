@@ -6,12 +6,17 @@
 
 // ---------------------------------------------------------------------------
 //  MySQL / MariaDB
+//  Tip: put your real login in config.local.php (copy config.local.example.php) - that file is
+//  never overwritten when you install a new version. Values there win over the ones below.
 // ---------------------------------------------------------------------------
-const DB_HOST = '127.0.0.1';
-const DB_PORT = 3306;
-const DB_NAME = 'ahpc_bom';          // created automatically if the user is allowed to
-const DB_USER = 'root';
-const DB_PASS = '';
+if (is_file(__DIR__ . '/config.local.php')) {
+    require __DIR__ . '/config.local.php';
+}
+defined('DB_HOST') || define('DB_HOST', '127.0.0.1');
+defined('DB_PORT') || define('DB_PORT', 3306);
+defined('DB_NAME') || define('DB_NAME', 'ahpc_bom');   // created automatically if the user is allowed to
+defined('DB_USER') || define('DB_USER', 'root');
+defined('DB_PASS') || define('DB_PASS', '');
 
 // ---------------------------------------------------------------------------
 //  ZOHO MAIL SETTINGS  -  EDIT THESE 5 LINES
